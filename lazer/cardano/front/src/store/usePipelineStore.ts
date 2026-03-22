@@ -45,51 +45,48 @@ function makeInitialNodeConfigs(): Record<NodeId, NodeConfig> {
 let logCounter = 0;
 
 interface PipelineState {
-  // Pipeline data
   price: PriceUpdate | null;
+  livePrice: PriceUpdate | null;
   decision: ActionDecision | null;
   datum: OracleDatum | null;
   txBuild: TxBuildResult | null;
+  lockResult: TxBuildResult | null;
+  spendResult: TxBuildResult | null;
   walletInfo: WalletInfo | null;
   burnerAddress: string | null;
   serviceStatus: ServiceStatus | null;
 
-  // Lock confirmation tracking
   lockTxHash: string | null;
   lockConfirmed: boolean;
   lockConfirming: boolean;
 
-  // Execution state
   nodeStates: Record<NodeId, NodeExecutionState>;
   logs: LogEntry[];
   selectedNodeId: NodeId | null;
 
-  // Node customization
   nodeConfigs: Record<NodeId, NodeConfig>;
   configModalNodeId: NodeId | null;
 
-  // Config
   config: {
     dryRun: boolean;
     mockMode: boolean;
-    spendMode: boolean;
     decisionConfig: DecisionConfig;
   };
 
-  // Helpers
   setNodeState: (id: NodeId, patch: Partial<NodeExecutionState>) => void;
   addLog: (level: LogLevel, message: string, nodeId?: NodeId) => void;
   selectNode: (id: NodeId | null) => void;
   setConfig: (patch: Partial<PipelineState["config"]>) => void;
   setDecisionConfig: (patch: Partial<DecisionConfig>) => void;
+  setLivePrice: (price: PriceUpdate) => void;
   updateNodeConfig: (id: NodeId, patch: Partial<NodeConfig>) => void;
   openConfigModal: (id: NodeId) => void;
   closeConfigModal: () => void;
 
-  // Actions
   fetchPrice: () => Promise<void>;
   decide: () => Promise<void>;
-  buildTx: () => Promise<void>;
+  buildLockTx: () => Promise<boolean>;
+  buildSpendTx: () => Promise<boolean>;
   initBurnerWallet: () => Promise<void>;
   regenerateWallet: () => Promise<void>;
   fetchWalletInfo: () => Promise<void>;
@@ -103,11 +100,13 @@ export const usePipelineStore = create<PipelineState>((set, get) => {
   const getApi = () => (get().config.mockMode ? mockApiClient : realApiClient);
 
   return {
-    // Initial state
     price: null,
+    livePrice: null,
     decision: null,
     datum: null,
     txBuild: null,
+    lockResult: null,
+    spendResult: null,
     walletInfo: null,
     burnerAddress: null,
     serviceStatus: null,
@@ -122,7 +121,6 @@ export const usePipelineStore = create<PipelineState>((set, get) => {
     config: {
       dryRun: false,
       mockMode: false,
-      spendMode: false,
       decisionConfig: {
         datumKind: "MinPrice",
         minPriceUsdCents: DEFAULT_MIN_PRICE_USD_CENTS,
@@ -131,7 +129,6 @@ export const usePipelineStore = create<PipelineState>((set, get) => {
       },
     },
 
-    // Helpers
     setNodeState: (id, patch) =>
       set((s) => ({
         nodeStates: {
@@ -167,6 +164,8 @@ export const usePipelineStore = create<PipelineState>((set, get) => {
         },
       })),
 
+    setLivePrice: (price) => set({ livePrice: price }),
+
     updateNodeConfig: (id, patch) =>
       set((s) => ({
         nodeConfigs: {
@@ -178,7 +177,6 @@ export const usePipelineStore = create<PipelineState>((set, get) => {
     openConfigModal: (id) => set({ configModalNodeId: id }),
     closeConfigModal: () => set({ configModalNodeId: null }),
 
-    // Actions
     fetchPrice: async () => {
       const { setNodeState, addLog } = get();
       const api = getApi();
@@ -256,108 +254,98 @@ export const usePipelineStore = create<PipelineState>((set, get) => {
       }
     },
 
-    buildTx: async () => {
-      const { decision, datum, config, setNodeState, addLog } = get();
+    buildLockTx: async () => {
+      const { datum, config, setNodeState, addLog } = get();
       const api = getApi();
-
-      const shouldSpend = config.spendMode;
-      const kind = shouldSpend ? "spend" : "lock";
-
       const txDatum = datum ?? buildDatumFromConfig(config.decisionConfig);
+      const lockAmount = get().nodeConfigs["tx-builder"].lockAmount;
+      const lovelace = lockAmount ? Number(lockAmount) : undefined;
 
       setNodeState("tx-builder", {
         state: "running",
-        input: { kind, dryRun: config.dryRun, datum: txDatum },
+        input: { kind: "lock", datum: txDatum, lovelace },
         error: null,
       });
-      if (shouldSpend) {
-        setNodeState("aiken-validator", { state: "running", error: null });
-      }
-      addLog(
-        "info",
-        `Building ${kind} TX${config.dryRun ? " (dry-run)" : ""}…`,
-        "tx-builder",
-      );
+      addLog("info", "Building lock TX…", "tx-builder");
 
       try {
         const mnemonic = getMnemonic();
-        let result: TxBuildResult;
-        if (shouldSpend) {
-          result = await api.buildSpendTx(txDatum, config.dryRun, mnemonic, config.decisionConfig.maxAgeSeconds);
-        } else {
-          result = await api.buildLockTx(txDatum, config.dryRun, mnemonic);
-        }
+        const result = await api.buildLockTx(txDatum, config.dryRun, mnemonic, lovelace);
+        set({ txBuild: result, lockResult: result, datum: result.datum });
 
-        set({ txBuild: result, datum: result.datum });
-
-        if (!shouldSpend && result.status === "submitted") {
-          setNodeState("tx-builder", {
-            state: "running",
-            output: result,
-            lastRun: Date.now(),
-          });
+        if (result.status === "submitted") {
+          setNodeState("tx-builder", { state: "running", output: result, lastRun: Date.now() });
           setNodeState("execution-result", {
             state: "running",
             input: result,
             output: { txHash: result.txHash, status: "confirming" },
             lastRun: Date.now(),
           });
-          addLog(
-            "success",
-            `Lock TX built (submitted): ${result.txHash}`,
-            "tx-builder",
-          );
+          addLog("success", `Lock TX submitted: ${result.txHash}`, "tx-builder");
           await get().pollLockConfirmation(result.txHash);
-          setNodeState("tx-builder", {
-            state: "success",
-            output: result,
-            lastRun: Date.now(),
-          });
+          setNodeState("tx-builder", { state: "success", output: result, lastRun: Date.now() });
           setNodeState("execution-result", {
             state: "success",
             input: result,
-            output: { txHash: result.txHash, status: result.status },
+            output: { txHash: result.txHash, status: "confirmed" },
             lastRun: Date.now(),
           });
         } else {
-          setNodeState("tx-builder", {
-            state: "success",
-            output: result,
-            lastRun: Date.now(),
-          });
+          setNodeState("tx-builder", { state: "success", output: result, lastRun: Date.now() });
           setNodeState("execution-result", {
             state: "success",
             input: result,
             output: { txHash: result.txHash, status: result.status },
             lastRun: Date.now(),
           });
-          if (shouldSpend) {
-            setNodeState("aiken-validator", {
-              state: "success",
-              output: { script: "price_validator.spend", verified: true },
-              lastRun: Date.now(),
-            });
-          }
-          addLog(
-            "success",
-            `${kind.charAt(0).toUpperCase() + kind.slice(1)} TX built (${result.status}): ${result.txHash}`,
-            "tx-builder",
-          );
         }
+        get().fetchWalletInfo();
+        return true;
       } catch (err) {
-        setNodeState("tx-builder", {
-          state: "error",
-          error: String(err),
+        setNodeState("tx-builder", { state: "error", error: String(err), lastRun: Date.now() });
+        addLog("error", `Lock TX failed: ${err}`, "tx-builder");
+        return false;
+      }
+    },
+
+    buildSpendTx: async () => {
+      const { datum, config, setNodeState, addLog } = get();
+      const api = getApi();
+      const txDatum = datum ?? buildDatumFromConfig(config.decisionConfig);
+
+      setNodeState("tx-builder", {
+        state: "running",
+        input: { kind: "spend", datum: txDatum },
+        error: null,
+      });
+      setNodeState("aiken-validator", { state: "running", error: null });
+      addLog("info", "Building spend TX…", "tx-builder");
+
+      try {
+        const mnemonic = getMnemonic();
+        const result = await api.buildSpendTx(txDatum, config.dryRun, mnemonic, config.decisionConfig.maxAgeSeconds);
+        set({ txBuild: result, spendResult: result, datum: result.datum });
+
+        setNodeState("tx-builder", { state: "success", output: result, lastRun: Date.now() });
+        setNodeState("execution-result", {
+          state: "success",
+          input: result,
+          output: { txHash: result.txHash, status: result.status },
           lastRun: Date.now(),
         });
-        if (shouldSpend) {
-          setNodeState("aiken-validator", {
-            state: "error",
-            error: String(err),
-            lastRun: Date.now(),
-          });
-        }
-        addLog("error", `TX build failed: ${err}`, "tx-builder");
+        setNodeState("aiken-validator", {
+          state: "success",
+          output: { script: "price_validator.spend", verified: true },
+          lastRun: Date.now(),
+        });
+        addLog("success", `Spend TX submitted: ${result.txHash}`, "tx-builder");
+        get().fetchWalletInfo();
+        return true;
+      } catch (err) {
+        setNodeState("tx-builder", { state: "error", error: String(err), lastRun: Date.now() });
+        setNodeState("aiken-validator", { state: "error", error: String(err), lastRun: Date.now() });
+        addLog("error", `Spend TX failed: ${err}`, "tx-builder");
+        return false;
       }
     },
 
@@ -438,15 +426,9 @@ export const usePipelineStore = create<PipelineState>((set, get) => {
     },
 
     runAll: async () => {
-      const { fetchPrice, decide, buildTx, addLog } = get();
-      const { spendMode } = get().config;
+      const { fetchPrice, decide, buildLockTx, buildSpendTx, addLog } = get();
 
-      if (spendMode && get().lockTxHash && !get().lockConfirmed) {
-        addLog("warn", "Lock TX not yet confirmed — wait before spending", "tx-builder");
-        return;
-      }
-
-      addLog("info", "Running full pipeline…");
+      addLog("info", "Running escrow pipeline…");
 
       await fetchPrice();
       if (get().nodeStates["pyth-source"].state === "error") return;
@@ -455,7 +437,7 @@ export const usePipelineStore = create<PipelineState>((set, get) => {
       const decision = get().decision;
       if (get().nodeStates["decision"].state === "error") return;
 
-      if (decision?.action === "block" && spendMode) {
+      if (decision?.action === "block") {
         get().setNodeState("tx-builder", {
           state: "blocked",
           input: null,
@@ -467,7 +449,16 @@ export const usePipelineStore = create<PipelineState>((set, get) => {
         return;
       }
 
-      await buildTx();
+      const lockOk = await buildLockTx();
+      if (!lockOk) return;
+
+      addLog("info", "Lock confirmed — now building spend TX…", "tx-builder");
+
+      // Re-fetch price for the spend (needs fresh payload for on-chain verification)
+      await fetchPrice();
+      if (get().nodeStates["pyth-source"].state === "error") return;
+
+      await buildSpendTx();
     },
 
     reset: () => {
@@ -477,6 +468,8 @@ export const usePipelineStore = create<PipelineState>((set, get) => {
         decision: null,
         datum: null,
         txBuild: null,
+        lockResult: null,
+        spendResult: null,
         lockTxHash: null,
         lockConfirmed: false,
         lockConfirming: false,

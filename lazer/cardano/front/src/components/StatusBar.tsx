@@ -23,7 +23,6 @@ function getStepColor(state: string, nodeId: NodeId): string {
 
 export default function StatusBar() {
   const nodeStates = usePipelineStore((s) => s.nodeStates);
-  const config = usePipelineStore((s) => s.config);
   const walletInfo = usePipelineStore((s) => s.walletInfo);
 
   // Derive pipeline status
@@ -87,13 +86,8 @@ export default function StatusBar() {
         })}
       </div>
 
-      {/* Right: Mode badges */}
+      {/* Right: Network badge */}
       <div className="flex items-center gap-2">
-        {config.spendMode && (
-          <span className="rounded-sm px-2 py-0.5 text-[10px] font-bold uppercase" style={{ backgroundColor: "var(--accent-purple)", color: "#000", opacity: 0.9 }}>
-            Spend
-          </span>
-        )}
         <span className="rounded-sm px-2 py-0.5 text-[10px] font-medium text-secondary" style={{ backgroundColor: "var(--bg-elevated)" }}>
           {walletInfo?.network ?? "Preprod"}
         </span>

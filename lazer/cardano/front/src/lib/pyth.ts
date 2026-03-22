@@ -70,6 +70,7 @@ async function ensureClient(): Promise<void> {
           payload: new Uint8Array(payload),
           receivedAt: Date.now(),
         };
+        _notifyListeners();
 
         if (!resolved) {
           resolved = true;
@@ -131,6 +132,20 @@ export function getLatestPriceIfAvailable(): FreshPrice | null {
     timestamp: cached.timestamp,
     payload: cached.payload,
   };
+}
+
+type PriceListener = (price: { feedId: number; priceUsdCents: string; timestamp: number }) => void;
+const priceListeners = new Set<PriceListener>();
+
+export function onPriceUpdate(listener: PriceListener): () => void {
+  priceListeners.add(listener);
+  return () => { priceListeners.delete(listener); };
+}
+
+export function _notifyListeners(): void {
+  if (!cached) return;
+  const snap = { feedId: cached.feedId, priceUsdCents: cached.priceUsdCents.toString(), timestamp: cached.timestamp };
+  for (const fn of priceListeners) fn(snap);
 }
 
 export { ensureClient as initPythClient };

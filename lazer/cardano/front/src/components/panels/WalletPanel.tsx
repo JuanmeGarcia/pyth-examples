@@ -21,7 +21,6 @@ export default function WalletPanel() {
   const initBurnerWallet = usePipelineStore((s) => s.initBurnerWallet);
   const regenerateWallet = usePipelineStore((s) => s.regenerateWallet);
   const fetchWalletInfo = usePipelineStore((s) => s.fetchWalletInfo);
-  const mockMode = usePipelineStore((s) => s.config.mockMode);
 
   useEffect(() => {
     initBurnerWallet();
@@ -29,7 +28,7 @@ export default function WalletPanel() {
 
   useEffect(() => {
     if (burnerAddress) fetchWalletInfo();
-  }, [burnerAddress, fetchWalletInfo, mockMode]);
+  }, [burnerAddress, fetchWalletInfo]);
 
   return (
     <div className="space-y-2 border-t pt-3" style={{ borderColor: "var(--border-default)" }}>

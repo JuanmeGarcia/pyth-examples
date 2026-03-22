@@ -2,7 +2,7 @@
 export const ADA_USD_FEED_ID = 16;
 
 // Defaults for the decision config
-export const DEFAULT_MIN_PRICE_USD_CENTS = 50; // $0.50
+export const DEFAULT_MIN_PRICE_USD_CENTS = 20; // $0.20
 export const DEFAULT_MAX_PRICE_USD_CENTS = 100; // $1.00
 export const DEFAULT_MAX_AGE_SECONDS = 60;
 export const DEFAULT_LOCK_LOVELACE = "2000000"; // 2 ADA

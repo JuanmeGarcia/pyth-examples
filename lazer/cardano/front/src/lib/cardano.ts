@@ -31,16 +31,15 @@ const NETWORK = (process.env.CARDANO_NETWORK ?? "preprod") as
 
 const BLOCKFROST_API_KEY = process.env.BLOCKFROST_API_KEY ?? "";
 
-const PYTH_CONTRACT_POLICY_ID = process.env.PYTH_CONTRACT_POLICY_ID ?? "";
-const PYTH_STATE_UTXO_TX_HASH = process.env.PYTH_STATE_UTXO_TX_HASH ?? "";
-const PYTH_STATE_UTXO_TX_INDEX = Number(
-  process.env.PYTH_STATE_UTXO_TX_INDEX ?? "0",
-);
+// Pyth Lazer on-chain addresses (preprod) — fixed deployment, no env config needed
+const PYTH_CONTRACT_POLICY_ID =
+  "d799d287105dea9377cdf9ea8502a83d2b9eb2d2050a8aea800a21e6";
+const PYTH_STATE_UTXO_TX_HASH =
+  "49f981daf1f5a5dc1a59357b6ebd2b7f3962f7d47a73ba048a033a123e2539ed";
+const PYTH_STATE_UTXO_TX_INDEX = 0;
 const PYTH_WITHDRAW_SCRIPT_HASH =
-  process.env.PYTH_WITHDRAW_SCRIPT_HASH ?? "";
-const PYTH_WITHDRAW_SCRIPT_SIZE = Number(
-  process.env.PYTH_WITHDRAW_SCRIPT_SIZE ?? "2745",
-);
+  "68a8972304546f254cbf625996c3a9e2ac860f77a9fcd4ee9f73907b";
+const PYTH_WITHDRAW_SCRIPT_SIZE = 2745;
 
 let _provider: BlockfrostProvider | null = null;
 let _script: {

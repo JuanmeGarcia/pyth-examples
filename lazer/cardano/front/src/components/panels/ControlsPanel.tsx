@@ -2,7 +2,6 @@
 
 import { useEffect } from "react";
 import { usePipelineStore } from "@/store/usePipelineStore";
-import Toggle from "@/components/shared/Toggle";
 import { RotateCcw } from "lucide-react";
 import { DATUM_KIND_OPTIONS } from "@/lib/constants";
 import type { OracleDatum } from "@/types";
@@ -18,8 +17,9 @@ function StatusDot({ ok }: { ok: boolean }) {
 
 export default function ControlsPanel() {
   const config = usePipelineStore((s) => s.config);
-  const setConfig = usePipelineStore((s) => s.setConfig);
   const setDecisionConfig = usePipelineStore((s) => s.setDecisionConfig);
+  const nodeConfigs = usePipelineStore((s) => s.nodeConfigs);
+  const updateNodeConfig = usePipelineStore((s) => s.updateNodeConfig);
   const reset = usePipelineStore((s) => s.reset);
   const serviceStatus = usePipelineStore((s) => s.serviceStatus);
   const fetchServiceStatus = usePipelineStore((s) => s.fetchServiceStatus);
@@ -31,11 +31,13 @@ export default function ControlsPanel() {
   const { datumKind } = config.decisionConfig;
   const showMin = datumKind === "MinPrice" || datumKind === "PriceRange";
   const showMax = datumKind === "MaxPrice" || datumKind === "PriceRange";
+  const lockAmount = nodeConfigs["tx-builder"]?.lockAmount ?? "2000000";
+  const lockAda = (parseInt(lockAmount) / 1e6).toFixed(1);
 
   return (
     <div className="space-y-3">
       <h2 className="text-xs font-semibold uppercase tracking-wider text-muted">
-        Controls
+        Escrow Config
       </h2>
 
       <button
@@ -46,15 +48,6 @@ export default function ControlsPanel() {
         <RotateCcw className="mr-1.5 inline h-3.5 w-3.5" />
         Reset
       </button>
-
-      <div className="space-y-2 pt-2">
-        <Toggle
-          label="Spend Mode"
-          checked={config.spendMode}
-          onChange={(v) => setConfig({ spendMode: v })}
-          color="var(--accent-purple)"
-        />
-      </div>
 
       {serviceStatus && (
         <div className="space-y-1 rounded-md border border-white/10 bg-white/[0.02] p-2 text-[11px]">
@@ -75,6 +68,22 @@ export default function ControlsPanel() {
       )}
 
       <div className="space-y-2 border-t pt-3" style={{ borderColor: "var(--border-default)" }}>
+        <label className="block">
+          <span className="text-xs text-muted">Lock amount (ADA)</span>
+          <input
+            type="number"
+            step="0.5"
+            min="1.5"
+            value={parseFloat(lockAda)}
+            onChange={(e) => {
+              const ada = parseFloat(e.target.value) || 2;
+              updateNodeConfig("tx-builder", { lockAmount: String(Math.round(ada * 1e6)) });
+            }}
+            className="mt-1 w-full rounded border bg-[var(--bg-primary)] px-2 py-1.5 text-sm text-foreground font-mono"
+            style={{ borderColor: "var(--border-default)" }}
+          />
+        </label>
+
         <label className="block">
           <span className="text-xs text-muted">Datum condition</span>
           <select
