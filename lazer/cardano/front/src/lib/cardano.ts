@@ -222,7 +222,7 @@ export async function spendOracleUtxo(
     .withdrawalTxInReference(
       PYTH_STATE_UTXO_TX_HASH,
       PYTH_STATE_UTXO_TX_INDEX,
-      PYTH_WITHDRAW_SCRIPT_SIZE,
+      PYTH_WITHDRAW_SCRIPT_SIZE.toString(),
       PYTH_WITHDRAW_SCRIPT_HASH,
     )
     .withdrawalRedeemerValue([payloadHex], undefined, { mem: 2_000_000, steps: 1_000_000_000 })

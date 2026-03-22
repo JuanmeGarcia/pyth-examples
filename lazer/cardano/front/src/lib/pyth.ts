@@ -21,19 +21,64 @@ interface CachedPrice {
 
 let cached: CachedPrice | null = null;
 let client: PythLazerClient | null = null;
-let connecting = false;
+
+let clientReady: Promise<void> | null = null;
 
 async function ensureClient(): Promise<void> {
-  if (client || connecting) return;
+  if (clientReady) return clientReady;
   if (!PYTH_ACCESS_TOKEN) {
     throw new Error("PYTH_ACCESS_TOKEN not set in .env.local");
   }
-  connecting = true;
 
-  try {
+  clientReady = (async () => {
     client = await PythLazerClient.create({
       token: PYTH_ACCESS_TOKEN,
       webSocketPoolConfig: {},
+    });
+
+    const firstPrice = new Promise<void>((resolve) => {
+      const timeout = setTimeout(resolve, 5_000);
+
+      client!.addMessageListener((message) => {
+        if (message.type !== "json") return;
+        const val = (message as any).value;
+        if (val.type !== "streamUpdated") return;
+
+        const feed = val.parsed?.priceFeeds?.[0];
+        const solana:
+          | { encoding: "base64" | "hex"; data: string }
+          | undefined = val.solana;
+        if (!feed || !solana) return;
+
+        const mantissa = BigInt(feed.price);
+        const exponent: number = feed.exponent;
+        const shift = exponent + 2;
+        const priceUsdCents =
+          shift >= 0
+            ? mantissa * 10n ** BigInt(shift)
+            : mantissa / 10n ** BigInt(-shift);
+
+        const timestampUs = BigInt(val.parsed.timestampUs ?? 0);
+        const timestamp = Number(timestampUs / 1000n);
+
+        const payload = Buffer.from(solana.data, solana.encoding);
+
+        cached = {
+          feedId: feed.priceFeedId,
+          priceUsdCents,
+          timestamp,
+          payload: new Uint8Array(payload),
+          receivedAt: Date.now(),
+        };
+
+        if (!resolved) {
+          resolved = true;
+          clearTimeout(timeout);
+          resolve();
+        }
+      });
+
+      let resolved = false;
     });
 
     client.subscribe({
@@ -45,44 +90,12 @@ async function ensureClient(): Promise<void> {
       channel: "fixed_rate@200ms",
     });
 
-    client.addMessageListener((message) => {
-      if (message.type !== "json") return;
-      const val = (message as any).value;
-      if (val.type !== "streamUpdated") return;
+    console.log(`[pyth] Subscribed to feed ${ADA_USD_FEED_ID} (ADA/USD)`);
+    await firstPrice;
+    console.log("[pyth] First price received");
+  })();
 
-      const feed = val.parsed?.priceFeeds?.[0];
-      const solana: { encoding: "base64" | "hex"; data: string } | undefined =
-        val.solana;
-      if (!feed || !solana) return;
-
-      const mantissa = BigInt(feed.price);
-      const exponent: number = feed.exponent;
-      const shift = exponent + 2;
-      const priceUsdCents =
-        shift >= 0
-          ? mantissa * 10n ** BigInt(shift)
-          : mantissa / 10n ** BigInt(-shift);
-
-      const timestampUs = BigInt(val.parsed.timestampUs ?? 0);
-      const timestamp = Number(timestampUs / 1000n);
-
-      const payload = Buffer.from(solana.data, solana.encoding);
-
-      cached = {
-        feedId: feed.priceFeedId,
-        priceUsdCents,
-        timestamp,
-        payload: new Uint8Array(payload),
-        receivedAt: Date.now(),
-      };
-    });
-
-    console.log(
-      `[pyth] Subscribed to feed ${ADA_USD_FEED_ID} (ADA/USD)`,
-    );
-  } finally {
-    connecting = false;
-  }
+  return clientReady;
 }
 
 export interface FreshPrice {

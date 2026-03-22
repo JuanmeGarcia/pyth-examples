@@ -270,6 +270,9 @@ export const usePipelineStore = create<PipelineState>((set, get) => {
         input: { kind, dryRun: config.dryRun, datum: txDatum },
         error: null,
       });
+      if (shouldSpend) {
+        setNodeState("aiken-validator", { state: "running", error: null });
+      }
       addLog(
         "info",
         `Building ${kind} TX${config.dryRun ? " (dry-run)" : ""}…`,
@@ -297,6 +300,13 @@ export const usePipelineStore = create<PipelineState>((set, get) => {
           output: { txHash: result.txHash, status: result.status },
           lastRun: Date.now(),
         });
+        if (shouldSpend) {
+          setNodeState("aiken-validator", {
+            state: "success",
+            output: { script: "price_validator.spend", verified: true },
+            lastRun: Date.now(),
+          });
+        }
         addLog(
           "success",
           `${kind.charAt(0).toUpperCase() + kind.slice(1)} TX built (${result.status}): ${result.txHash}`,
@@ -312,6 +322,13 @@ export const usePipelineStore = create<PipelineState>((set, get) => {
           error: String(err),
           lastRun: Date.now(),
         });
+        if (shouldSpend) {
+          setNodeState("aiken-validator", {
+            state: "error",
+            error: String(err),
+            lastRun: Date.now(),
+          });
+        }
         addLog("error", `TX build failed: ${err}`, "tx-builder");
       }
     },
