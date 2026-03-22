@@ -5,11 +5,10 @@ import { usePipelineStore } from "@/store/usePipelineStore";
 import { X } from "lucide-react";
 import { NODE_LABELS, NODE_LAYER, LAYER_COLORS, NODE_ACCENT_OVERRIDE } from "@/types/nodes";
 import type { NodeId, NodeConfig } from "@/types/nodes";
-import { FEED_OPTIONS, NETWORK_OPTIONS } from "@/lib/constants";
+import { DATUM_KIND_OPTIONS, NETWORK_OPTIONS } from "@/lib/constants";
 
 type Tab = "parameters" | "visual";
 
-// Per-node parameter fields
 function ParametersTab({ nodeId, config, onChange }: {
   nodeId: NodeId;
   config: NodeConfig;
@@ -19,56 +18,36 @@ function ParametersTab({ nodeId, config, onChange }: {
     case "pyth-source":
       return (
         <div className="space-y-3">
-          <label className="block">
-            <span className="text-xs text-muted">Feed ID</span>
-            <select
-              value={config.feedId ?? FEED_OPTIONS[0].value}
-              onChange={(e) => onChange({ feedId: e.target.value })}
-              className="mt-1 w-full rounded border bg-[var(--bg-primary)] px-2 py-1.5 text-sm text-foreground"
-              style={{ borderColor: "var(--border-default)" }}
-            >
-              {FEED_OPTIONS.map((f) => (
-                <option key={f.value} value={f.value}>
-                  {f.label}
-                </option>
-              ))}
-            </select>
-          </label>
+          <div>
+            <span className="text-xs text-muted">Feed</span>
+            <div className="mt-1 rounded border bg-[var(--bg-primary)] px-2 py-1.5 text-sm text-secondary font-mono" style={{ borderColor: "var(--border-default)" }}>
+              ADA/USD (feed 16)
+            </div>
+          </div>
+          <div className="text-[10px] text-muted italic">
+            Feed is fixed to ADA/USD via Pyth Lazer WebSocket
+          </div>
         </div>
       );
 
     case "normalize":
       return (
         <div className="space-y-3">
-          <label className="block">
-            <span className="text-xs text-muted">Decimal Precision</span>
-            <input
-              type="number"
-              min={0}
-              max={18}
-              value={config.decimalPrecision ?? 6}
-              onChange={(e) => onChange({ decimalPrecision: Number(e.target.value) })}
-              className="mt-1 w-full rounded border bg-[var(--bg-primary)] px-2 py-1.5 text-sm text-foreground"
-              style={{ borderColor: "var(--border-default)" }}
-            />
-          </label>
+          <div>
+            <span className="text-xs text-muted">Conversion</span>
+            <div className="mt-1 rounded border bg-[var(--bg-primary)] px-2 py-1.5 text-sm text-secondary" style={{ borderColor: "var(--border-default)" }}>
+              mantissa × 10^(exponent + 2) → USD cents
+            </div>
+          </div>
+          <div className="text-[10px] text-muted italic">
+            Normalization is handled by Pyth Lazer SDK
+          </div>
         </div>
       );
 
     case "decision":
       return (
         <div className="space-y-3">
-          <label className="block">
-            <span className="text-xs text-muted">Price Threshold (USD)</span>
-            <input
-              type="number"
-              value={config.priceThreshold ?? ""}
-              placeholder="Use global default"
-              onChange={(e) => onChange({ priceThreshold: e.target.value ? Number(e.target.value) : undefined })}
-              className="mt-1 w-full rounded border bg-[var(--bg-primary)] px-2 py-1.5 text-sm text-foreground"
-              style={{ borderColor: "var(--border-default)" }}
-            />
-          </label>
           <label className="block">
             <span className="text-xs text-muted">Max Age (seconds)</span>
             <input
@@ -80,6 +59,9 @@ function ParametersTab({ nodeId, config, onChange }: {
               style={{ borderColor: "var(--border-default)" }}
             />
           </label>
+          <div className="text-[10px] text-muted italic">
+            Datum condition is set in the Controls panel
+          </div>
         </div>
       );
 
@@ -90,13 +72,13 @@ function ParametersTab({ nodeId, config, onChange }: {
             <span className="text-xs text-muted">Lock Amount (lovelace)</span>
             <input
               type="text"
-              value={config.lockAmount ?? "5000000"}
+              value={config.lockAmount ?? "2000000"}
               onChange={(e) => onChange({ lockAmount: e.target.value })}
               className="mt-1 w-full rounded border bg-[var(--bg-primary)] px-2 py-1.5 text-sm text-foreground font-mono"
               style={{ borderColor: "var(--border-default)" }}
             />
             <span className="text-[10px] text-muted mt-0.5 block">
-              {config.lockAmount ? `${(parseInt(config.lockAmount) / 1e6).toFixed(1)} ADA` : "5.0 ADA"}
+              {config.lockAmount ? `${(parseInt(config.lockAmount) / 1e6).toFixed(1)} ADA` : "2.0 ADA"}
             </span>
           </label>
           <label className="flex items-center justify-between">
@@ -117,7 +99,7 @@ function ParametersTab({ nodeId, config, onChange }: {
           <label className="block">
             <span className="text-xs text-muted">Network</span>
             <select
-              value={config.network ?? "Preview"}
+              value={config.network ?? "Preprod"}
               onChange={(e) => onChange({ network: e.target.value })}
               className="mt-1 w-full rounded border bg-[var(--bg-primary)] px-2 py-1.5 text-sm text-foreground"
               style={{ borderColor: "var(--border-default)" }}
@@ -136,7 +118,7 @@ function ParametersTab({ nodeId, config, onChange }: {
           <div>
             <span className="text-xs text-muted">Validator</span>
             <div className="mt-1 rounded border bg-[var(--bg-primary)] px-2 py-1.5 text-sm text-secondary font-mono" style={{ borderColor: "var(--border-default)" }}>
-              pythathon_lock.spend
+              price_validator.spend
             </div>
           </div>
           <div>
@@ -153,7 +135,6 @@ function ParametersTab({ nodeId, config, onChange }: {
   }
 }
 
-// Visual customization tab
 function VisualTab({ config, onChange }: {
   config: NodeConfig;
   onChange: (patch: Partial<NodeConfig>) => void;
@@ -194,7 +175,6 @@ export default function NodeConfigModal() {
   const updateNodeConfig = usePipelineStore((s) => s.updateNodeConfig);
   const [tab, setTab] = useState<Tab>("parameters");
 
-  // Close on Escape
   const handleKeyDown = useCallback(
     (e: KeyboardEvent) => {
       if (e.key === "Escape") closeConfigModal();
@@ -221,13 +201,11 @@ export default function NodeConfigModal() {
 
   return (
     <>
-      {/* Backdrop */}
       <div
         className="fixed inset-0 z-40 bg-black/50"
         onClick={closeConfigModal}
       />
 
-      {/* Modal */}
       <div
         className="fixed z-50 top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-[460px] max-h-[80vh] rounded-xl border-2 overflow-hidden flex flex-col"
         style={{
@@ -235,7 +213,6 @@ export default function NodeConfigModal() {
           borderColor: layerColors.primary,
         }}
       >
-        {/* Header */}
         <div
           className="flex items-center justify-between px-4 py-3 border-b"
           style={{
@@ -263,7 +240,6 @@ export default function NodeConfigModal() {
           </button>
         </div>
 
-        {/* Tabs */}
         <div className="flex border-b" style={{ borderColor: "var(--border-default)" }}>
           {(["parameters", "visual"] as const).map((t) => (
             <button
@@ -285,7 +261,6 @@ export default function NodeConfigModal() {
           ))}
         </div>
 
-        {/* Content */}
         <div className="flex-1 overflow-y-auto p-4">
           {tab === "parameters" ? (
             <ParametersTab nodeId={nodeId} config={config} onChange={handleChange} />

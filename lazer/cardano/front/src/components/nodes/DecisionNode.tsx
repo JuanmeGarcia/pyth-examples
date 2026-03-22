@@ -4,8 +4,8 @@ import BaseNode from "./BaseNode";
 import { usePipelineStore } from "@/store/usePipelineStore";
 
 const actionColors: Record<string, string> = {
-  deposit: "var(--accent-cyan)",
-  unlock: "var(--accent-green)",
+  lock: "var(--accent-cyan)",
+  spend: "var(--accent-green)",
   block: "var(--accent-red)",
 };
 
@@ -18,7 +18,7 @@ export default function DecisionNode() {
     <BaseNode
       nodeId="decision"
       title="Decision Engine"
-      subtitle="block / deposit / unlock"
+      subtitle="block / lock / spend"
       onRun={decide}
       runLabel="Decide"
     >
@@ -42,10 +42,8 @@ export default function DecisionNode() {
           </div>
         )}
         <div className="flex justify-between text-muted">
-          <span>threshold</span>
-          <span className="text-secondary">
-            ${config.priceThreshold.toLocaleString()}
-          </span>
+          <span>datum</span>
+          <span className="text-secondary">{config.datumKind}</span>
         </div>
         <div className="flex justify-between text-muted">
           <span>max age</span>

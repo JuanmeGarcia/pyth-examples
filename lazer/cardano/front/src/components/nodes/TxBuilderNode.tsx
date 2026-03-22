@@ -11,7 +11,7 @@ export default function TxBuilderNode() {
   const buildTx = usePipelineStore((s) => s.buildTx);
 
   const kind =
-    config.unlockMode || decision?.action === "unlock" ? "unlock" : "lock";
+    config.spendMode || decision?.action === "spend" ? "spend" : "lock";
 
   return (
     <BaseNode
@@ -39,7 +39,7 @@ export default function TxBuilderNode() {
             <div className="flex justify-between text-muted">
               <span>redeemer</span>
               <span className="text-secondary">
-                {kind === "unlock" ? "Unlock" : "—"}
+                {kind === "spend" ? "Pyth payload" : "—"}
               </span>
             </div>
             <div className="flex justify-between text-muted">

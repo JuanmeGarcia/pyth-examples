@@ -1,130 +1,77 @@
-# Pyth — Integración de precios
+# Pyth Lazer integration
 
-## ¿Qué es Pyth?
+## What is Pyth Lazer?
 
-Pyth Network es un oráculo de precios que agrega datos de market makers institucionales y los publica on-chain en múltiples blockchains. Para Cardano se usa a través de Wormhole.
+Pyth Lazer is a low-latency oracle service from Pyth Network. It streams signed
+price updates over WebSocket that can be verified on-chain.
 
-Para obtener precios sin autenticación se usa **Hermes**, el endpoint HTTP público de Pyth.
+## Connection
 
-## Hermes — endpoint HTTP
-
-Base URL: `https://hermes.pyth.network`
-
-### Obtener el precio más reciente
+The off-chain code connects to three redundant endpoints:
 
 ```
-GET /v2/updates/price/latest?ids[]=<feedId>
+wss://pyth-lazer-0.dourolabs.app/v1/stream
+wss://pyth-lazer-1.dourolabs.app/v1/stream
+wss://pyth-lazer-2.dourolabs.app/v1/stream
 ```
 
-**Ejemplo:**
-```bash
-curl "https://hermes.pyth.network/v2/updates/price/latest?ids[]=e62df6c8b4a85fe1a67db44dc12de5db330f7ac66b72dc658afedf0f4a415b43"
+Authentication uses `PYTH_ACCESS_TOKEN` (environment variable).
+
+## Subscription
+
+```typescript
+await client.subscribe({
+  type: "subscribe",
+  subscriptionId: 1,
+  priceFeedIds: [16],          // ADA/USD
+  properties: ["price", "exponent"],
+  formats: ["solana"],          // signed payload format
+  channel: "fixed_rate@200ms",
+});
 ```
 
-**Respuesta:**
-```json
-{
-  "parsed": [{
-    "id": "e62df6c8b4a85fe1a67db44dc12de5db330f7ac66b72dc658afedf0f4a415b43",
-    "price": {
-      "price": "7073011000",
-      "conf": "250000",
-      "expo": -5,
-      "publish_time": 1774063917
-    },
-    "ema_price": { "..." }
-  }],
-  "binary": {
-    "encoding": "base64",
-    "data": ["..."]
-  }
-}
-```
+## Price format
 
-## Formato del precio
-
-Pyth usa una representación de precio fijo-punto:
+Pyth Lazer returns prices as mantissa + exponent:
 
 ```
-precio_real = price × 10^expo
+price_usd = mantissa × 10^exponent
 ```
 
-**Ejemplo BTC/USD:**
+For on-chain use we convert to USD cents:
+
 ```
-price = "7073011000"
-expo  = -5
-valor = 7073011000 × 10^(-5) = $70,730.11
+price_cents = mantissa × 10^(exponent + 2)
 ```
 
-El campo `conf` es el intervalo de confianza (mismo formato y expo).
+Example with ADA at $0.65:
+
+```
+mantissa = 65000000
+exponent = -8
+price_usd = 65000000 × 10^(-8) = $0.65
+price_cents = 65000000 × 10^(-8+2) = 65000000 × 10^(-6) = 65
+```
+
+## Payload
+
+The `solana` format field contains a signed binary payload. This payload is
+passed as the transaction redeemer so the on-chain validator can verify it
+using the `pyth` Aiken library.
 
 ## Feed IDs
 
-Los feed IDs son únicos por asset y son los mismos en todas las redes:
+| Asset   | Feed ID |
+|---------|---------|
+| ADA/USD | 16      |
 
-| Asset | Feed ID |
-|---|---|
-| BTC/USD | `e62df6c8b4a85fe1a67db44dc12de5db330f7ac66b72dc658afedf0f4a415b43` |
-| ETH/USD | `ff61491a931112ddf1bd8147cd1b641375f79f5825126d665480874634fd0ace` |
-| ADA/USD | `2a01deaec9e51a579277b34b122399984d0bbf57e2458a7e42fecd2829867a0d` |
+## Implementation
 
-Referencia completa: [pyth.network/price-feeds](https://pyth.network/price-feeds)
+| Module | What it does |
+|--------|--------------|
+| `front/src/lib/pyth.ts` | Server-only Pyth Lazer WebSocket client + in-memory price cache |
+| `off-chain/src/nodes/price_fetcher.ts` | CLI version of the same (standalone Node.js) |
+| `off-chain/src/nodes/price_cache.ts` | Simple in-memory cache singleton |
 
-## Payload hash
-
-El campo `binary.data[0]` contiene el VAA (Verified Action Approval) firmado por los guardianes de Wormhole. Para la versión actual del sistema se usa el hash SHA-256 del JSON completo de la respuesta como referencia:
-
-```typescript
-// api/src/providers/pythHermes.ts
-rawPayload: JSON.stringify(data)  // JSON completo de la respuesta
-
-// api/src/services/normalizePrice.ts
-const payloadHash = createHash("sha256").update(quote.rawPayload).digest("hex");
-```
-
-**Diseño futuro (Pyth Pro):** el `payload_hash` en el datum puede contener el hash del VAA binario firmado, habilitando verificación criptográfica on-chain mediante Wormhole guardian signatures. Para migrar solo se necesita:
-1. Crear un nuevo provider que use la API autenticada
-2. Setear `rawPayload = vaa_binary_hex`
-3. El resto del sistema no cambia
-
-## Implementación en el proyecto
-
-```
-api/src/providers/
-  pythHermes.ts     ← implementación HTTP pública (getPrice)
-```
-
-La función `getPrice(feedId)` retorna un `PriceQuote` normalizado. Para reemplazar Hermes por Pyth Pro (autenticado, WS, VAA verificado) basta con crear un nuevo provider que exporte la misma firma.
-
-## Normalización del precio
-
-El pipeline normaliza el precio a dos representaciones:
-
-| Campo | Tipo | Descripción |
-|---|---|---|
-| `value` | `number` | Float human-readable (`70730.11`) |
-| `valueScaled` | `string` | Entero con 6 decimales para on-chain (`"70730110000"`) |
-
-**Fórmula:**
-```
-effectiveExp = SCALE(6) + expo
-valueScaled  = rawPrice × 10^effectiveExp   (si effectiveExp ≥ 0)
-             = rawPrice / 10^(-effectiveExp) (si effectiveExp < 0)
-```
-
-**Ejemplo con expo = -5:**
-```
-effectiveExp = 6 + (-5) = 1
-valueScaled  = 7073011000 × 10^1 = 70730110000
-```
-
-## Staleness check
-
-El `publish_time` es un unix timestamp en segundos. El decision engine rechaza precios con más de `maxAgeSeconds` (default: 60s):
-
-```typescript
-const age = Math.floor(Date.now() / 1000) - price.timestamp;
-if (age > config.maxAgeSeconds) {
-  return { action: "block", reason: `Stale: ${age}s` };
-}
-```
+Both implementations share the same pattern: connect, subscribe, cache the
+latest price, reject if stale (>60s).

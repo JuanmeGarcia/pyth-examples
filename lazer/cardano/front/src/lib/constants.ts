@@ -1,15 +1,11 @@
-export const BTC_USD_FEED_ID =
-  "e62df6c8b4a85fe1a67db44dc12de5db330f7ac66b72dc658afedf0f4a415b43";
+// Pyth Lazer feed IDs (integer, not hex)
+export const ADA_USD_FEED_ID = 16;
 
-export const ETH_USD_FEED_ID =
-  "ff61491a931112ddf1bd8147cd1b641375f79f5825126d665480874634fd0ace";
-
-export const ADA_USD_FEED_ID =
-  "2a01deaec9e51a579277b34b122399984d0bbf57e2458a7e42fecd2829867a0d";
-
-export const DEFAULT_PRICE_THRESHOLD = 90000;
+// Defaults for the decision config
+export const DEFAULT_MIN_PRICE_USD_CENTS = 50; // $0.50
+export const DEFAULT_MAX_PRICE_USD_CENTS = 100; // $1.00
 export const DEFAULT_MAX_AGE_SECONDS = 60;
-export const DEFAULT_LOCK_LOVELACE = "5000000"; // 5 ADA
+export const DEFAULT_LOCK_LOVELACE = "2000000"; // 2 ADA
 
 export const EXPLORER_URLS: Record<string, string> = {
   preview: "https://preview.cardanoscan.io/transaction",
@@ -17,10 +13,11 @@ export const EXPLORER_URLS: Record<string, string> = {
   mainnet: "https://cardanoscan.io/transaction",
 };
 
-export const FEED_OPTIONS = [
-  { label: "BTC / USD", value: BTC_USD_FEED_ID },
-  { label: "ETH / USD", value: ETH_USD_FEED_ID },
-  { label: "ADA / USD", value: ADA_USD_FEED_ID },
+export const DATUM_KIND_OPTIONS = [
+  { label: "Any Price", value: "AnyPrice" },
+  { label: "Min Price", value: "MinPrice" },
+  { label: "Max Price", value: "MaxPrice" },
+  { label: "Price Range", value: "PriceRange" },
 ] as const;
 
 export const NETWORK_OPTIONS = ["Preview", "Preprod", "Mainnet"] as const;

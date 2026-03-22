@@ -1,34 +1,39 @@
 import type {
-  PriceQuote,
-  NormalizedPrice,
+  PriceUpdate,
   ActionDecision,
   TxBuildResult,
   WalletInfo,
+  OracleDatum,
   DecisionConfig,
-  UtxoInfo,
-  HealthResponse,
+  ServiceStatus,
 } from "@/types";
+import { decide, buildDatumFromConfig } from "./price";
 
 export interface PipelineApiClient {
-  getHealth(): Promise<HealthResponse>;
-  getWallet(): Promise<WalletInfo>;
-  getUtxos(): Promise<UtxoInfo[]>;
-  getPrice(feedId: string): Promise<PriceQuote>;
-  normalize(quote: PriceQuote): Promise<NormalizedPrice>;
+  getPrice(): Promise<PriceUpdate>;
   decide(
-    price: NormalizedPrice,
-    config: DecisionConfig
+    price: PriceUpdate,
+    config: DecisionConfig,
   ): Promise<ActionDecision>;
   buildLockTx(
-    price: NormalizedPrice,
-    dryRun: boolean
+    datum: OracleDatum,
+    dryRun: boolean,
+    mnemonic: string[],
+    lovelace?: number,
   ): Promise<TxBuildResult>;
-  buildUnlockTx(dryRun: boolean, toAddress?: string): Promise<TxBuildResult>;
+  buildSpendTx(
+    datum: OracleDatum,
+    dryRun: boolean,
+    mnemonic: string[],
+    maxAgeSeconds?: number,
+  ): Promise<TxBuildResult>;
+  getWalletBalance(address: string): Promise<{ balanceLovelace?: string; scriptAddress: string; network: string; configured: boolean }>;
+  getStatus(): Promise<ServiceStatus>;
 }
 
 async function fetchJson<T>(
   url: string,
-  options?: RequestInit
+  options?: RequestInit,
 ): Promise<T> {
   const res = await fetch(url, {
     headers: { "Content-Type": "application/json" },
@@ -37,45 +42,43 @@ async function fetchJson<T>(
   if (!res.ok) {
     const body = await res.json().catch(() => ({}));
     throw new Error(
-      (body as { error?: string }).error || `HTTP ${res.status}: ${res.statusText}`
+      (body as { error?: string }).error ||
+        `HTTP ${res.status}: ${res.statusText}`,
     );
   }
   return res.json() as Promise<T>;
 }
 
 export const realApiClient: PipelineApiClient = {
-  getHealth: () => fetchJson("/api/health"),
+  getPrice: () => fetchJson("/api/price"),
 
-  getWallet: () => fetchJson("/api/wallet"),
-
-  getUtxos: async () => {
-    const result = await fetchJson<{ utxos: UtxoInfo[] }>("/api/utxos");
-    return result.utxos;
+  decide: async (price, config) => {
+    const datum = buildDatumFromConfig(config);
+    return decide(
+      Number(price.priceUsdCents),
+      price.timestamp,
+      datum,
+      config.maxAgeSeconds,
+    );
   },
 
-  getPrice: (feedId) => fetchJson(`/api/price?feedId=${feedId}`),
-
-  normalize: (quote) =>
-    fetchJson("/api/normalize", {
+  buildLockTx: (datum, dryRun, mnemonic, lovelace) =>
+    fetchJson("/api/tx/lock", {
       method: "POST",
-      body: JSON.stringify(quote),
+      body: JSON.stringify({ datum, dryRun, mnemonic, lovelace }),
     }),
 
-  decide: (price, config) =>
-    fetchJson("/api/decide", {
+  buildSpendTx: (datum, dryRun, mnemonic, maxAgeSeconds) =>
+    fetchJson("/api/tx/spend", {
       method: "POST",
-      body: JSON.stringify({ price, config }),
+      body: JSON.stringify({ datum, dryRun, mnemonic, maxAgeSeconds }),
     }),
 
-  buildLockTx: (price, dryRun) =>
-    fetchJson("/api/tx/build-lock", {
+  getWalletBalance: (address) =>
+    fetchJson("/api/wallet", {
       method: "POST",
-      body: JSON.stringify({ price, dryRun }),
+      body: JSON.stringify({ address }),
     }),
 
-  buildUnlockTx: (dryRun, toAddress) =>
-    fetchJson("/api/tx/build-unlock", {
-      method: "POST",
-      body: JSON.stringify({ dryRun, toAddress }),
-    }),
+  getStatus: () => fetchJson("/api/status"),
 };

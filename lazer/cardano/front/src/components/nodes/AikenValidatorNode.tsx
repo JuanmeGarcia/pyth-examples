@@ -20,7 +20,7 @@ export default function AikenValidatorNode() {
         <div className="flex justify-between text-muted">
           <span>script</span>
           <span className="font-mono text-secondary text-[10px]">
-            pythathon_lock.spend
+            price_validator.spend
           </span>
         </div>
         <div className="flex justify-between text-muted">
@@ -34,10 +34,10 @@ export default function AikenValidatorNode() {
         <div className="mt-2 border-t pt-2 text-[10px]" style={{ borderColor: "var(--border-default)" }}>
           <div className="font-semibold text-secondary mb-1">DATUM</div>
           <div className="space-y-0.5 text-muted pl-2">
-            <div>owner: ByteArray</div>
-            <div>price: Int</div>
-            <div>timestamp: Int</div>
-            <div>payload_hash: ByteArray</div>
+            <div>AnyPrice</div>
+            <div>MinPrice &#123; min_price_usd_cents &#125;</div>
+            <div>MaxPrice &#123; max_price_usd_cents &#125;</div>
+            <div>PriceRange &#123; lo_cents, hi_cents &#125;</div>
           </div>
         </div>
         <div className="border-t pt-2 text-[10px]" style={{ borderColor: "var(--border-default)" }}>
@@ -45,11 +45,11 @@ export default function AikenValidatorNode() {
           <div className="space-y-0.5 text-muted pl-2">
             <div className="flex items-center gap-1">
               <Check className="h-3 w-3 shrink-0 text-[var(--accent-green)]" />
-              signed by datum.owner
+              Pyth Lazer update verified
             </div>
             <div className="flex items-center gap-1">
               <Check className="h-3 w-3 shrink-0 text-[var(--accent-green)]" />
-              redeemer = Unlock
+              price satisfies datum condition
             </div>
           </div>
         </div>

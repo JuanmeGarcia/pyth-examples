@@ -2,10 +2,27 @@
 
 import { usePipelineStore } from "@/store/usePipelineStore";
 import CopyButton from "@/components/shared/CopyButton";
+import type { OracleDatum } from "@/types";
+
+function datumSummary(datum: OracleDatum): string[] {
+  switch (datum.kind) {
+    case "AnyPrice":
+      return ["kind: AnyPrice"];
+    case "MinPrice":
+      return [`kind: MinPrice`, `min: ${datum.minPriceUsdCents} cents`];
+    case "MaxPrice":
+      return [`kind: MaxPrice`, `max: ${datum.maxPriceUsdCents} cents`];
+    case "PriceRange":
+      return [
+        `kind: PriceRange`,
+        `lo: ${datum.loCents} cents`,
+        `hi: ${datum.hiCents} cents`,
+      ];
+  }
+}
 
 export default function TxViewerPanel() {
   const txBuild = usePipelineStore((s) => s.txBuild);
-  const walletInfo = usePipelineStore((s) => s.walletInfo);
 
   if (!txBuild) {
     return (
@@ -19,16 +36,20 @@ export default function TxViewerPanel() {
 
   return (
     <div className="space-y-3 overflow-y-auto">
-      {/* TX Hash */}
       <div>
         <div className="text-[10px] text-muted uppercase mb-1">TX Hash</div>
-        <div className="flex items-center gap-1 rounded border p-2 font-mono text-xs text-secondary" style={{ borderColor: "var(--border-default)", backgroundColor: "var(--bg-primary)" }}>
+        <div
+          className="flex items-center gap-1 rounded border p-2 font-mono text-xs text-secondary"
+          style={{
+            borderColor: "var(--border-default)",
+            backgroundColor: "var(--bg-primary)",
+          }}
+        >
           <span className="truncate">{txBuild.txHash}</span>
           <CopyButton text={txBuild.txHash} />
         </div>
       </div>
 
-      {/* Explorer Link */}
       {txBuild.explorerUrl && (
         <a
           href={txBuild.explorerUrl}
@@ -40,15 +61,18 @@ export default function TxViewerPanel() {
         </a>
       )}
 
-      {/* UTxO Flow Diagram */}
       <div>
         <div className="text-[10px] text-muted uppercase mb-2">UTxO Flow</div>
         <div className="flex items-center justify-center gap-2 text-xs">
           <div
             className="rounded border px-3 py-2 text-center"
             style={{
-              borderColor: isLock ? "var(--accent-cyan)" : "var(--accent-purple)",
-              backgroundColor: isLock ? "var(--accent-cyan)" : "var(--accent-purple)",
+              borderColor: isLock
+                ? "var(--accent-cyan)"
+                : "var(--accent-purple)",
+              backgroundColor: isLock
+                ? "var(--accent-cyan)"
+                : "var(--accent-purple)",
               color: "#000",
               opacity: 0.9,
             }}
@@ -63,7 +87,7 @@ export default function TxViewerPanel() {
             <span className="text-[10px] mx-1">
               {txBuild.lovelace
                 ? `${(parseInt(txBuild.lovelace) / 1e6).toFixed(1)} ADA`
-                : "5 ADA"}
+                : "2 ADA"}
             </span>
             <span className="text-lg">→</span>
           </div>
@@ -71,8 +95,12 @@ export default function TxViewerPanel() {
           <div
             className="rounded border px-3 py-2 text-center"
             style={{
-              borderColor: isLock ? "var(--accent-purple)" : "var(--accent-cyan)",
-              backgroundColor: isLock ? "var(--accent-purple)" : "var(--accent-cyan)",
+              borderColor: isLock
+                ? "var(--accent-purple)"
+                : "var(--accent-cyan)",
+              backgroundColor: isLock
+                ? "var(--accent-purple)"
+                : "var(--accent-cyan)",
               color: "#000",
               opacity: 0.9,
             }}
@@ -84,14 +112,18 @@ export default function TxViewerPanel() {
         </div>
       </div>
 
-      {/* Datum Summary */}
-      <div className="rounded border p-2 text-[11px] font-mono" style={{ borderColor: "var(--border-default)", backgroundColor: "var(--bg-primary)" }}>
+      <div
+        className="rounded border p-2 text-[11px] font-mono"
+        style={{
+          borderColor: "var(--border-default)",
+          backgroundColor: "var(--bg-primary)",
+        }}
+      >
         <div className="text-muted mb-1">datum:</div>
         <div className="pl-2 space-y-0.5 text-secondary">
-          <div>owner: {txBuild.datum.owner.slice(0, 16)}…</div>
-          <div>price: {txBuild.datum.price}</div>
-          <div>timestamp: {txBuild.datum.timestamp}</div>
-          <div>hash: {txBuild.datum.payloadHash.slice(0, 16)}…</div>
+          {datumSummary(txBuild.datum).map((line, i) => (
+            <div key={i}>{line}</div>
+          ))}
         </div>
       </div>
     </div>

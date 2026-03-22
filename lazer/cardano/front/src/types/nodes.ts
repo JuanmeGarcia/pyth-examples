@@ -36,7 +36,7 @@ export const NODE_IDS: NodeId[] = [
 ];
 
 export const NODE_LABELS: Record<NodeId, string> = {
-  "pyth-source": "Pyth Source",
+  "pyth-source": "Pyth Lazer",
   normalize: "Normalize",
   decision: "Decision Engine",
   "tx-builder": "TX Builder",
@@ -67,15 +67,9 @@ export const NODE_ACCENT_OVERRIDE: Partial<Record<NodeId, { primary: string; sec
 };
 
 export interface NodeConfig {
-  // Visual
   customLabel?: string;
   customColor?: string;
   notes?: string;
-  // Per-node params
-  feedId?: string;
-  endpointUrl?: string;
-  decimalPrecision?: number;
-  priceThreshold?: number;
   maxAgeSeconds?: number;
   lockAmount?: string;
   dryRun?: boolean;
