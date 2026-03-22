@@ -48,7 +48,10 @@ export const realApiClient: PipelineApiClient = {
 
   getWallet: () => fetchJson("/api/wallet"),
 
-  getUtxos: () => fetchJson("/api/utxos"),
+  getUtxos: async () => {
+    const result = await fetchJson<{ utxos: UtxoInfo[] }>("/api/utxos");
+    return result.utxos;
+  },
 
   getPrice: (feedId) => fetchJson(`/api/price?feedId=${feedId}`),
 

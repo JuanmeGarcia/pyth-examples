@@ -20,7 +20,8 @@ let _cache: { script: PlutusScript; scriptAddress: string; hash: string } | null
 export function loadScript(plutusPath?: string) {
   if (_cache) return _cache;
 
-  const path = plutusPath ?? resolve(import.meta.dirname, "../../../aiken/plutus.json");
+  const path =
+    plutusPath ?? resolve(import.meta.dirname, "../../../on-chain/plutus.json");
 
   const raw = readFileSync(path, "utf-8");
   const blueprint: Blueprint = JSON.parse(raw);
