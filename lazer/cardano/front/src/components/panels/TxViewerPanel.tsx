@@ -23,6 +23,8 @@ function datumSummary(datum: OracleDatum): string[] {
 
 export default function TxViewerPanel() {
   const txBuild = usePipelineStore((s) => s.txBuild);
+  const lockConfirmed = usePipelineStore((s) => s.lockConfirmed);
+  const lockConfirming = usePipelineStore((s) => s.lockConfirming);
 
   if (!txBuild) {
     return (
@@ -59,6 +61,38 @@ export default function TxViewerPanel() {
         >
           View on CardanoScan →
         </a>
+      )}
+
+      {isLock && txBuild.status === "submitted" && (
+        <div
+          className="flex items-center gap-2 rounded border p-2 text-xs"
+          style={{
+            borderColor: lockConfirmed
+              ? "var(--accent-green)"
+              : "var(--accent-amber)",
+            backgroundColor: lockConfirmed
+              ? "rgba(34,197,94,0.08)"
+              : "rgba(245,158,11,0.08)",
+          }}
+        >
+          {lockConfirming && (
+            <span
+              className="inline-block h-3 w-3 rounded-full border-2 border-t-transparent animate-spin"
+              style={{ borderColor: "var(--accent-amber)", borderTopColor: "transparent" }}
+            />
+          )}
+          <span
+            style={{
+              color: lockConfirmed
+                ? "var(--accent-green)"
+                : "var(--accent-amber)",
+            }}
+          >
+            {lockConfirmed
+              ? "Confirmed — you can now run Spend Mode"
+              : "Waiting for on-chain confirmation…"}
+          </span>
+        </div>
       )}
 
       <div>

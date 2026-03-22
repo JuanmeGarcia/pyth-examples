@@ -54,6 +54,11 @@ interface PipelineState {
   burnerAddress: string | null;
   serviceStatus: ServiceStatus | null;
 
+  // Lock confirmation tracking
+  lockTxHash: string | null;
+  lockConfirmed: boolean;
+  lockConfirming: boolean;
+
   // Execution state
   nodeStates: Record<NodeId, NodeExecutionState>;
   logs: LogEntry[];
@@ -89,6 +94,7 @@ interface PipelineState {
   regenerateWallet: () => Promise<void>;
   fetchWalletInfo: () => Promise<void>;
   fetchServiceStatus: () => Promise<void>;
+  pollLockConfirmation: (txHash: string) => Promise<void>;
   runAll: () => Promise<void>;
   reset: () => void;
 }
@@ -105,14 +111,17 @@ export const usePipelineStore = create<PipelineState>((set, get) => {
     walletInfo: null,
     burnerAddress: null,
     serviceStatus: null,
+    lockTxHash: null,
+    lockConfirmed: false,
+    lockConfirming: false,
     nodeStates: makeInitialNodeStates(),
     nodeConfigs: makeInitialNodeConfigs(),
     configModalNodeId: null,
     logs: [],
     selectedNodeId: null,
     config: {
-      dryRun: true,
-      mockMode: true,
+      dryRun: false,
+      mockMode: false,
       spendMode: false,
       decisionConfig: {
         datumKind: "MinPrice",
@@ -251,8 +260,7 @@ export const usePipelineStore = create<PipelineState>((set, get) => {
       const { decision, datum, config, setNodeState, addLog } = get();
       const api = getApi();
 
-      const shouldSpend =
-        config.spendMode || (decision && decision.action === "spend");
+      const shouldSpend = config.spendMode;
       const kind = shouldSpend ? "spend" : "lock";
 
       const txDatum = datum ?? buildDatumFromConfig(config.decisionConfig);
@@ -294,6 +302,10 @@ export const usePipelineStore = create<PipelineState>((set, get) => {
           `${kind.charAt(0).toUpperCase() + kind.slice(1)} TX built (${result.status}): ${result.txHash}`,
           "tx-builder",
         );
+
+        if (!shouldSpend && result.status === "submitted") {
+          get().pollLockConfirmation(result.txHash);
+        }
       } catch (err) {
         setNodeState("tx-builder", {
           state: "error",
@@ -353,8 +365,41 @@ export const usePipelineStore = create<PipelineState>((set, get) => {
       }
     },
 
+    pollLockConfirmation: async (txHash: string) => {
+      const { addLog } = get();
+      set({ lockTxHash: txHash, lockConfirmed: false, lockConfirming: true });
+      addLog("info", "Waiting for lock TX to confirm on-chain…", "tx-builder");
+
+      for (let attempt = 0; attempt < 30; attempt++) {
+        await new Promise((r) => setTimeout(r, 5_000));
+        try {
+          const res = await fetch("/api/tx/confirm", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ txHash }),
+          });
+          const data = await res.json();
+          if (data.confirmed) {
+            set({ lockConfirmed: true, lockConfirming: false });
+            addLog("success", `Lock TX confirmed in block ${data.block}`, "tx-builder");
+            return;
+          }
+        } catch {
+          // retry
+        }
+      }
+      set({ lockConfirming: false });
+      addLog("warn", "Lock TX confirmation timed out — check explorer", "tx-builder");
+    },
+
     runAll: async () => {
       const { fetchPrice, decide, buildTx, addLog } = get();
+      const { spendMode } = get().config;
+
+      if (spendMode && get().lockTxHash && !get().lockConfirmed) {
+        addLog("warn", "Lock TX not yet confirmed — wait before spending", "tx-builder");
+        return;
+      }
 
       addLog("info", "Running full pipeline…");
 
@@ -365,7 +410,7 @@ export const usePipelineStore = create<PipelineState>((set, get) => {
       const decision = get().decision;
       if (get().nodeStates["decision"].state === "error") return;
 
-      if (decision?.action === "block" && !get().config.spendMode) {
+      if (decision?.action === "block" && spendMode) {
         get().setNodeState("tx-builder", {
           state: "blocked",
           input: null,
@@ -387,6 +432,9 @@ export const usePipelineStore = create<PipelineState>((set, get) => {
         decision: null,
         datum: null,
         txBuild: null,
+        lockTxHash: null,
+        lockConfirmed: false,
+        lockConfirming: false,
         nodeStates: makeInitialNodeStates(),
         logs: [],
         selectedNodeId: null,

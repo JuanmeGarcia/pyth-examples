@@ -17,7 +17,7 @@ export default function TxBuilderNode() {
     <BaseNode
       nodeId="tx-builder"
       title="TX Builder"
-      subtitle={`${kind} / ${config.dryRun ? "dry-run" : "submit"}`}
+      subtitle={kind}
       onRun={buildTx}
       runLabel={`Build ${kind.charAt(0).toUpperCase() + kind.slice(1)} TX`}
       showBottomHandle
@@ -47,10 +47,7 @@ export default function TxBuilderNode() {
               <span
                 className="font-semibold"
                 style={{
-                  color:
-                    txBuild.status === "dry-run"
-                      ? "var(--accent-amber)"
-                      : "var(--accent-green)",
+                  color: "var(--accent-green)",
                 }}
               >
                 {txBuild.status}

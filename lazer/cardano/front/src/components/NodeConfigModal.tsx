@@ -81,15 +81,6 @@ function ParametersTab({ nodeId, config, onChange }: {
               {config.lockAmount ? `${(parseInt(config.lockAmount) / 1e6).toFixed(1)} ADA` : "2.0 ADA"}
             </span>
           </label>
-          <label className="flex items-center justify-between">
-            <span className="text-xs text-muted">Dry Run</span>
-            <input
-              type="checkbox"
-              checked={config.dryRun ?? true}
-              onChange={(e) => onChange({ dryRun: e.target.checked })}
-              className="rounded"
-            />
-          </label>
         </div>
       );
 

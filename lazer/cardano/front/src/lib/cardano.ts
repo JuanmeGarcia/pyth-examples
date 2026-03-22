@@ -5,14 +5,18 @@ import { resolve } from "node:path";
 import {
   BlockfrostProvider,
   MeshWallet,
+  MeshTxBuilder,
   Transaction,
   type PlutusScript,
   type Data,
+  type UTxO,
   resolveScriptHash,
   serializePlutusScript,
-  applyCborEncoding,
+  applyParamsToScript,
   unixTimeToEnclosingSlot,
   SLOT_CONFIG_NETWORK,
+  deserializeAddress,
+  serializeRewardAddress,
 } from "@meshsdk/core";
 import type { OracleDatum } from "@/types";
 
@@ -27,10 +31,23 @@ const NETWORK = (process.env.CARDANO_NETWORK ?? "preprod") as
 
 const BLOCKFROST_API_KEY = process.env.BLOCKFROST_API_KEY ?? "";
 
-// Lazy singletons
+const PYTH_CONTRACT_POLICY_ID = process.env.PYTH_CONTRACT_POLICY_ID ?? "";
+const PYTH_STATE_UTXO_TX_HASH = process.env.PYTH_STATE_UTXO_TX_HASH ?? "";
+const PYTH_STATE_UTXO_TX_INDEX = Number(
+  process.env.PYTH_STATE_UTXO_TX_INDEX ?? "0",
+);
+const PYTH_WITHDRAW_SCRIPT_HASH =
+  process.env.PYTH_WITHDRAW_SCRIPT_HASH ?? "";
+const PYTH_WITHDRAW_SCRIPT_SIZE = Number(
+  process.env.PYTH_WITHDRAW_SCRIPT_SIZE ?? "2745",
+);
+
 let _provider: BlockfrostProvider | null = null;
-let _script: { script: PlutusScript; address: string; hash: string } | null =
-  null;
+let _script: {
+  script: PlutusScript;
+  address: string;
+  hash: string;
+} | null = null;
 
 function getProvider(): BlockfrostProvider {
   if (!_provider) {
@@ -61,9 +78,17 @@ export function loadScript() {
   const validator = blueprint.validators[0];
   if (!validator) throw new Error(`No validators found in ${plutusPath}`);
 
-  const scriptCbor = applyCborEncoding(validator.compiledCode);
-  const script: PlutusScript = { code: scriptCbor, version: "V3" };
-  const hash = resolveScriptHash(script.code, "V3");
+  let compiledCode = validator.compiledCode;
+  if (PYTH_CONTRACT_POLICY_ID) {
+    compiledCode = applyParamsToScript(compiledCode, [PYTH_CONTRACT_POLICY_ID]);
+  }
+
+  // applyParamsToScript returns double-CBOR (bytestring(bytestring(FLAT))).
+  // MeshTxBuilder strips one layer internally before placing scripts in the
+  // witness set, so all APIs (resolveScriptHash, txInScript, etc.) expect
+  // the double-CBOR form.
+  const script: PlutusScript = { code: compiledCode, version: "V3" };
+  const hash = resolveScriptHash(compiledCode, "V3");
   const networkId = NETWORK === "mainnet" ? 1 : 0;
   const { address } = serializePlutusScript(script, undefined, networkId);
 
@@ -84,20 +109,11 @@ function encodeDatum(datum: OracleDatum): Data {
     case "AnyPrice":
       return { alternative: 0, fields: [] };
     case "MinPrice":
-      return {
-        alternative: 1,
-        fields: [datum.minPriceUsdCents],
-      };
+      return { alternative: 1, fields: [datum.minPriceUsdCents] };
     case "MaxPrice":
-      return {
-        alternative: 2,
-        fields: [datum.maxPriceUsdCents],
-      };
+      return { alternative: 2, fields: [datum.maxPriceUsdCents] };
     case "PriceRange":
-      return {
-        alternative: 3,
-        fields: [datum.loCents, datum.hiCents],
-      };
+      return { alternative: 3, fields: [datum.loCents, datum.hiCents] };
   }
 }
 
@@ -123,6 +139,28 @@ export async function lockOracleUtxo(
   return wallet.submitTx(signedTx);
 }
 
+async function fetchPythStateUtxo(): Promise<UTxO> {
+  const utxos = await getProvider().fetchUTxOs(
+    PYTH_STATE_UTXO_TX_HASH,
+    PYTH_STATE_UTXO_TX_INDEX,
+  );
+  if (utxos.length === 0)
+    throw new Error(
+      `Pyth state UTxO not found: ${PYTH_STATE_UTXO_TX_HASH}#${PYTH_STATE_UTXO_TX_INDEX}`,
+    );
+  return utxos[0];
+}
+
+/**
+ * Build and submit a spend transaction that redeems a script UTxO using a
+ * Pyth Lazer price update verified on-chain.
+ *
+ * Transaction shape (matches the official Pyth Cardano integration docs):
+ *   1. Validity window: [now - 60s, now + 60s]
+ *   2. Pyth state UTxO as reference input
+ *   3. Zero-lovelace withdrawal from Pyth withdraw script with [payload] as redeemer
+ *   4. Our validator spending the script UTxO
+ */
 export async function spendOracleUtxo(
   mnemonic: string[],
   datum: OracleDatum,
@@ -131,32 +169,91 @@ export async function spendOracleUtxo(
   const wallet = await createWalletFromMnemonic(mnemonic);
   const { script, address: scriptAddress } = loadScript();
 
-  const utxos = await getProvider().fetchAddressUTxOs(scriptAddress);
-  if (utxos.length === 0) throw new Error("No UTxOs at oracle script address");
+  const scriptUtxos = await getProvider().fetchAddressUTxOs(scriptAddress);
+  if (scriptUtxos.length === 0)
+    throw new Error("No UTxOs at oracle script address");
 
-  const redeemerHex = Buffer.from(payload).toString("hex");
-  const redeemerData: Data = { alternative: 0, fields: [redeemerHex] };
+  const pythStateUtxo = await fetchPythStateUtxo();
+
+  const walletAddress = await wallet.getChangeAddress();
+  const { pubKeyHash: signerHash } = deserializeAddress(walletAddress);
+
+  const payloadHex = Buffer.from(payload).toString("hex");
 
   const networkKey = NETWORK === "mainnet" ? "mainnet" : NETWORK;
+  const networkId = NETWORK === "mainnet" ? 1 : 0;
   const slotConfig = SLOT_CONFIG_NETWORK[networkKey];
-  const ttlSlot = unixTimeToEnclosingSlot(Date.now() + 60_000, slotConfig);
 
-  const tx = new Transaction({ initiator: wallet })
-    .redeemValue({
-      value: utxos[0],
-      script,
-      redeemer: { data: redeemerData },
-    })
-    .setTimeToExpire(String(ttlSlot));
+  const now = Date.now();
+  const validFrom = unixTimeToEnclosingSlot(now - 60_000, slotConfig);
+  const validTo = unixTimeToEnclosingSlot(now + 60_000, slotConfig);
 
-  const unsignedTx = await tx.build();
-  const signedTx = await wallet.signTx(unsignedTx);
+  const targetUtxo = scriptUtxos[0];
+
+  const withdrawRewardAddr = serializeRewardAddress(
+    PYTH_WITHDRAW_SCRIPT_HASH,
+    true,
+    networkId,
+  );
+
+  const walletUtxos = await wallet.getUtxos();
+  if (walletUtxos.length === 0)
+    throw new Error("Wallet has no UTxOs — fund it first");
+
+  const collateralUtxo = walletUtxos.find((u) =>
+    u.output.amount.length === 1 &&
+    BigInt(u.output.amount[0].quantity) >= 5_000_000n,
+  ) ?? walletUtxos[0];
+
+  const txBuilder = new MeshTxBuilder({
+    fetcher: getProvider(),
+    submitter: getProvider(),
+  });
+
+  txBuilder
+    .invalidBefore(validFrom)
+    .invalidHereafter(validTo)
+    .readOnlyTxInReference(
+      pythStateUtxo.input.txHash,
+      pythStateUtxo.input.outputIndex,
+    )
+    .withdrawalPlutusScriptV3()
+    .withdrawal(withdrawRewardAddr, "0")
+    .withdrawalTxInReference(
+      PYTH_STATE_UTXO_TX_HASH,
+      PYTH_STATE_UTXO_TX_INDEX,
+      PYTH_WITHDRAW_SCRIPT_SIZE,
+      PYTH_WITHDRAW_SCRIPT_HASH,
+    )
+    .withdrawalRedeemerValue([payloadHex], undefined, { mem: 2_000_000, steps: 1_000_000_000 })
+    .spendingPlutusScriptV3()
+    .txIn(
+      targetUtxo.input.txHash,
+      targetUtxo.input.outputIndex,
+      targetUtxo.output.amount,
+      scriptAddress,
+    )
+    .txInScript(script.code)
+    .txInInlineDatumPresent()
+    .txInRedeemerValue({ alternative: 0, fields: ["mesh"] }, undefined, { mem: 2_000_000, steps: 1_000_000_000 })
+    .txInCollateral(
+      collateralUtxo.input.txHash,
+      collateralUtxo.input.outputIndex,
+      collateralUtxo.output.amount,
+      walletAddress,
+    )
+    .requiredSignerHash(signerHash)
+    .changeAddress(walletAddress)
+    .selectUtxosFrom(walletUtxos)
+    .setNetwork(networkKey);
+
+  const unsignedTx = await txBuilder.complete();
+  const signedTx = await wallet.signTx(unsignedTx, true);
   return wallet.submitTx(signedTx);
 }
 
 export async function fetchScriptUtxos() {
-  const scriptAddress = getScriptAddress();
-  return getProvider().fetchAddressUTxOs(scriptAddress);
+  return getProvider().fetchAddressUTxOs(getScriptAddress());
 }
 
 export function isBlockfrostConfigured(): boolean {

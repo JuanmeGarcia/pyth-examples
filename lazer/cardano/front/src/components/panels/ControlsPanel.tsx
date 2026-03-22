@@ -26,7 +26,7 @@ export default function ControlsPanel() {
 
   useEffect(() => {
     fetchServiceStatus();
-  }, [fetchServiceStatus, config.mockMode]);
+  }, [fetchServiceStatus]);
 
   const { datumKind } = config.decisionConfig;
   const showMin = datumKind === "MinPrice" || datumKind === "PriceRange";
@@ -49,17 +49,6 @@ export default function ControlsPanel() {
 
       <div className="space-y-2 pt-2">
         <Toggle
-          label="Mock Mode"
-          checked={config.mockMode}
-          onChange={(v) => setConfig({ mockMode: v })}
-        />
-        <Toggle
-          label="Dry Run"
-          checked={config.dryRun}
-          onChange={(v) => setConfig({ dryRun: v })}
-          color="var(--accent-amber)"
-        />
-        <Toggle
           label="Spend Mode"
           checked={config.spendMode}
           onChange={(v) => setConfig({ spendMode: v })}
@@ -67,7 +56,7 @@ export default function ControlsPanel() {
         />
       </div>
 
-      {!config.mockMode && serviceStatus && (
+      {serviceStatus && (
         <div className="space-y-1 rounded-md border border-white/10 bg-white/[0.02] p-2 text-[11px]">
           <div className="text-[10px] font-semibold uppercase tracking-wider text-muted mb-1">Services</div>
           <div className="flex items-center gap-1.5">
