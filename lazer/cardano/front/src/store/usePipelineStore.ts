@@ -289,32 +289,60 @@ export const usePipelineStore = create<PipelineState>((set, get) => {
         }
 
         set({ txBuild: result, datum: result.datum });
-        setNodeState("tx-builder", {
-          state: "success",
-          output: result,
-          lastRun: Date.now(),
-        });
-        setNodeState("execution-result", {
-          state: "success",
-          input: result,
-          output: { txHash: result.txHash, status: result.status },
-          lastRun: Date.now(),
-        });
-        if (shouldSpend) {
-          setNodeState("aiken-validator", {
-            state: "success",
-            output: { script: "price_validator.spend", verified: true },
-            lastRun: Date.now(),
-          });
-        }
-        addLog(
-          "success",
-          `${kind.charAt(0).toUpperCase() + kind.slice(1)} TX built (${result.status}): ${result.txHash}`,
-          "tx-builder",
-        );
 
         if (!shouldSpend && result.status === "submitted") {
-          get().pollLockConfirmation(result.txHash);
+          setNodeState("tx-builder", {
+            state: "running",
+            output: result,
+            lastRun: Date.now(),
+          });
+          setNodeState("execution-result", {
+            state: "running",
+            input: result,
+            output: { txHash: result.txHash, status: "confirming" },
+            lastRun: Date.now(),
+          });
+          addLog(
+            "success",
+            `Lock TX built (submitted): ${result.txHash}`,
+            "tx-builder",
+          );
+          await get().pollLockConfirmation(result.txHash);
+          setNodeState("tx-builder", {
+            state: "success",
+            output: result,
+            lastRun: Date.now(),
+          });
+          setNodeState("execution-result", {
+            state: "success",
+            input: result,
+            output: { txHash: result.txHash, status: result.status },
+            lastRun: Date.now(),
+          });
+        } else {
+          setNodeState("tx-builder", {
+            state: "success",
+            output: result,
+            lastRun: Date.now(),
+          });
+          setNodeState("execution-result", {
+            state: "success",
+            input: result,
+            output: { txHash: result.txHash, status: result.status },
+            lastRun: Date.now(),
+          });
+          if (shouldSpend) {
+            setNodeState("aiken-validator", {
+              state: "success",
+              output: { script: "price_validator.spend", verified: true },
+              lastRun: Date.now(),
+            });
+          }
+          addLog(
+            "success",
+            `${kind.charAt(0).toUpperCase() + kind.slice(1)} TX built (${result.status}): ${result.txHash}`,
+            "tx-builder",
+          );
         }
       } catch (err) {
         setNodeState("tx-builder", {
