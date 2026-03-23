@@ -1,13 +1,12 @@
 import { create } from "zustand";
 import type {
-  PriceQuote,
-  NormalizedPrice,
+  PriceUpdate,
   ActionDecision,
-  ScriptDatum,
-  ScriptRedeemer,
+  OracleDatum,
   TxBuildResult,
   WalletInfo,
   DecisionConfig,
+  ServiceStatus,
 } from "@/types";
 import type {
   NodeId,
@@ -19,7 +18,13 @@ import type {
 import { NODE_IDS } from "@/types/nodes";
 import { realApiClient } from "@/lib/api";
 import { mockApiClient } from "@/lib/mockApi";
-import { BTC_USD_FEED_ID, DEFAULT_PRICE_THRESHOLD, DEFAULT_MAX_AGE_SECONDS } from "@/lib/constants";
+import { buildDatumFromConfig } from "@/lib/price";
+import { getMnemonic, regenerateMnemonic, createBurnerWallet } from "@/lib/burnerWallet";
+import {
+  DEFAULT_MIN_PRICE_USD_CENTS,
+  DEFAULT_MAX_PRICE_USD_CENTS,
+  DEFAULT_MAX_AGE_SECONDS,
+} from "@/lib/constants";
 
 function makeInitialNodeStates(): Record<NodeId, NodeExecutionState> {
   const states = {} as Record<NodeId, NodeExecutionState>;
@@ -40,48 +45,53 @@ function makeInitialNodeConfigs(): Record<NodeId, NodeConfig> {
 let logCounter = 0;
 
 interface PipelineState {
-  // Pipeline data
-  rawPrice: PriceQuote | null;
-  normalizedPrice: NormalizedPrice | null;
+  price: PriceUpdate | null;
+  livePrice: PriceUpdate | null;
   decision: ActionDecision | null;
-  datum: ScriptDatum | null;
-  redeemer: ScriptRedeemer | null;
+  datum: OracleDatum | null;
   txBuild: TxBuildResult | null;
+  lockResult: TxBuildResult | null;
+  spendResult: TxBuildResult | null;
   walletInfo: WalletInfo | null;
+  burnerAddress: string | null;
+  serviceStatus: ServiceStatus | null;
 
-  // Execution state
+  lockTxHash: string | null;
+  lockConfirmed: boolean;
+  lockConfirming: boolean;
+
   nodeStates: Record<NodeId, NodeExecutionState>;
   logs: LogEntry[];
   selectedNodeId: NodeId | null;
 
-  // Node customization
   nodeConfigs: Record<NodeId, NodeConfig>;
   configModalNodeId: NodeId | null;
 
-  // Config
   config: {
     dryRun: boolean;
     mockMode: boolean;
-    unlockMode: boolean;
     decisionConfig: DecisionConfig;
   };
 
-  // Helpers
   setNodeState: (id: NodeId, patch: Partial<NodeExecutionState>) => void;
   addLog: (level: LogLevel, message: string, nodeId?: NodeId) => void;
   selectNode: (id: NodeId | null) => void;
   setConfig: (patch: Partial<PipelineState["config"]>) => void;
   setDecisionConfig: (patch: Partial<DecisionConfig>) => void;
+  setLivePrice: (price: PriceUpdate) => void;
   updateNodeConfig: (id: NodeId, patch: Partial<NodeConfig>) => void;
   openConfigModal: (id: NodeId) => void;
   closeConfigModal: () => void;
 
-  // Actions
   fetchPrice: () => Promise<void>;
-  normalizePrice: () => Promise<void>;
   decide: () => Promise<void>;
-  buildTx: () => Promise<void>;
+  buildLockTx: () => Promise<boolean>;
+  buildSpendTx: () => Promise<boolean>;
+  initBurnerWallet: () => Promise<void>;
+  regenerateWallet: () => Promise<void>;
   fetchWalletInfo: () => Promise<void>;
+  fetchServiceStatus: () => Promise<void>;
+  pollLockConfirmation: (txHash: string) => Promise<void>;
   runAll: () => Promise<void>;
   reset: () => void;
 }
@@ -90,30 +100,35 @@ export const usePipelineStore = create<PipelineState>((set, get) => {
   const getApi = () => (get().config.mockMode ? mockApiClient : realApiClient);
 
   return {
-    // Initial state
-    rawPrice: null,
-    normalizedPrice: null,
+    price: null,
+    livePrice: null,
     decision: null,
     datum: null,
-    redeemer: null,
     txBuild: null,
+    lockResult: null,
+    spendResult: null,
     walletInfo: null,
+    burnerAddress: null,
+    serviceStatus: null,
+    lockTxHash: null,
+    lockConfirmed: false,
+    lockConfirming: false,
     nodeStates: makeInitialNodeStates(),
     nodeConfigs: makeInitialNodeConfigs(),
     configModalNodeId: null,
     logs: [],
     selectedNodeId: null,
     config: {
-      dryRun: true,
-      mockMode: true,
-      unlockMode: false,
+      dryRun: false,
+      mockMode: false,
       decisionConfig: {
-        priceThreshold: DEFAULT_PRICE_THRESHOLD,
+        datumKind: "MinPrice",
+        minPriceUsdCents: DEFAULT_MIN_PRICE_USD_CENTS,
+        maxPriceUsdCents: DEFAULT_MAX_PRICE_USD_CENTS,
         maxAgeSeconds: DEFAULT_MAX_AGE_SECONDS,
       },
     },
 
-    // Helpers
     setNodeState: (id, patch) =>
       set((s) => ({
         nodeStates: {
@@ -149,6 +164,8 @@ export const usePipelineStore = create<PipelineState>((set, get) => {
         },
       })),
 
+    setLivePrice: (price) => set({ livePrice: price }),
+
     updateNodeConfig: (id, patch) =>
       set((s) => ({
         nodeConfigs: {
@@ -160,30 +177,23 @@ export const usePipelineStore = create<PipelineState>((set, get) => {
     openConfigModal: (id) => set({ configModalNodeId: id }),
     closeConfigModal: () => set({ configModalNodeId: null }),
 
-    // Actions
     fetchPrice: async () => {
-      const { setNodeState, addLog, nodeConfigs } = get();
+      const { setNodeState, addLog } = get();
       const api = getApi();
-      const feedId = nodeConfigs["pyth-source"]?.feedId || BTC_USD_FEED_ID;
-      const input = { feedId };
 
-      setNodeState("pyth-source", { state: "running", input, error: null });
-      addLog("info", "Fetching price from Pyth…", "pyth-source");
+      setNodeState("pyth-source", { state: "running", input: null, error: null });
+      addLog("info", "Fetching ADA/USD price from Pyth Lazer…", "pyth-source");
 
       try {
-        const quote = await api.getPrice(feedId);
-        const priceReal = parseInt(quote.price, 10) * Math.pow(10, quote.expo);
-        set({ rawPrice: quote });
+        const price = await api.getPrice();
+        const usd = (Number(price.priceUsdCents) / 100).toFixed(4);
+        set({ price });
         setNodeState("pyth-source", {
           state: "success",
-          output: quote,
+          output: price,
           lastRun: Date.now(),
         });
-        addLog(
-          "success",
-          `Price fetched: $${priceReal.toLocaleString(undefined, { maximumFractionDigits: 2 })}`,
-          "pyth-source"
-        );
+        addLog("success", `ADA/USD = $${usd}`, "pyth-source");
       } catch (err) {
         setNodeState("pyth-source", {
           state: "error",
@@ -194,65 +204,34 @@ export const usePipelineStore = create<PipelineState>((set, get) => {
       }
     },
 
-    normalizePrice: async () => {
-      const { rawPrice, setNodeState, addLog } = get();
-      const api = getApi();
-
-      if (!rawPrice) {
-        addLog("warn", "No raw price to normalize", "normalize");
-        return;
-      }
-
-      setNodeState("normalize", { state: "running", input: rawPrice, error: null });
-      addLog("info", "Normalizing price…", "normalize");
-
-      try {
-        const normalized = await api.normalize(rawPrice);
-        set({ normalizedPrice: normalized });
-        setNodeState("normalize", {
-          state: "success",
-          output: normalized,
-          lastRun: Date.now(),
-        });
-        addLog(
-          "success",
-          `Normalized: valueScaled=${normalized.valueScaled}`,
-          "normalize"
-        );
-      } catch (err) {
-        setNodeState("normalize", {
-          state: "error",
-          error: String(err),
-          lastRun: Date.now(),
-        });
-        addLog("error", `Normalize failed: ${err}`, "normalize");
-      }
-    },
-
     decide: async () => {
-      const { normalizedPrice, config, nodeConfigs, setNodeState, addLog } = get();
+      const { price, config, setNodeState, addLog } = get();
       const api = getApi();
 
-      if (!normalizedPrice) {
-        addLog("warn", "No normalized price for decision", "decision");
+      if (!price) {
+        addLog("warn", "No price available for decision", "decision");
         return;
       }
 
-      const decisionCfg: DecisionConfig = {
-        priceThreshold: nodeConfigs.decision?.priceThreshold ?? config.decisionConfig.priceThreshold,
-        maxAgeSeconds: nodeConfigs.decision?.maxAgeSeconds ?? config.decisionConfig.maxAgeSeconds,
-      };
+      setNodeState("normalize", {
+        state: "success",
+        input: price,
+        output: price,
+        lastRun: Date.now(),
+      });
+
+      const datumForDecision = buildDatumFromConfig(config.decisionConfig);
 
       setNodeState("decision", {
         state: "running",
-        input: { price: normalizedPrice, config: decisionCfg },
+        input: { price, datum: datumForDecision },
         error: null,
       });
       addLog("info", "Running decision engine…", "decision");
 
       try {
-        const decision = await api.decide(normalizedPrice, decisionCfg);
-        set({ decision });
+        const decision = await api.decide(price, config.decisionConfig);
+        set({ decision, datum: datumForDecision });
         setNodeState("decision", {
           state: "success",
           output: decision,
@@ -263,7 +242,7 @@ export const usePipelineStore = create<PipelineState>((set, get) => {
         addLog(
           level,
           `Decision: ${decision.action.toUpperCase()} — ${decision.reason}`,
-          "decision"
+          "decision",
         );
       } catch (err) {
         setNodeState("decision", {
@@ -275,94 +254,190 @@ export const usePipelineStore = create<PipelineState>((set, get) => {
       }
     },
 
-    buildTx: async () => {
-      const { normalizedPrice, decision, config, setNodeState, addLog } = get();
+    buildLockTx: async () => {
+      const { datum, config, setNodeState, addLog } = get();
       const api = getApi();
-
-      const shouldUnlock =
-        config.unlockMode || (decision && decision.action === "unlock");
-      const kind = shouldUnlock ? "unlock" : "lock";
+      const txDatum = datum ?? buildDatumFromConfig(config.decisionConfig);
+      const lockAmount = get().nodeConfigs["tx-builder"].lockAmount;
+      const lovelace = lockAmount ? Number(lockAmount) : undefined;
 
       setNodeState("tx-builder", {
         state: "running",
-        input: { kind, dryRun: config.dryRun },
+        input: { kind: "lock", datum: txDatum, lovelace },
         error: null,
       });
-      addLog(
-        "info",
-        `Building ${kind} TX${config.dryRun ? " (dry-run)" : ""}…`,
-        "tx-builder"
-      );
+      addLog("info", "Building lock TX…", "tx-builder");
 
       try {
-        let result: TxBuildResult;
-        if (shouldUnlock) {
-          result = await api.buildUnlockTx(config.dryRun);
+        const mnemonic = getMnemonic();
+        const result = await api.buildLockTx(txDatum, config.dryRun, mnemonic, lovelace);
+        set({ txBuild: result, lockResult: result, datum: result.datum });
+
+        if (result.status === "submitted") {
+          setNodeState("tx-builder", { state: "running", output: result, lastRun: Date.now() });
+          setNodeState("execution-result", {
+            state: "running",
+            input: result,
+            output: { txHash: result.txHash, status: "confirming" },
+            lastRun: Date.now(),
+          });
+          addLog("success", `Lock TX submitted: ${result.txHash}`, "tx-builder");
+          await get().pollLockConfirmation(result.txHash);
+          setNodeState("tx-builder", { state: "success", output: result, lastRun: Date.now() });
+          setNodeState("execution-result", {
+            state: "success",
+            input: result,
+            output: { txHash: result.txHash, status: "confirmed" },
+            lastRun: Date.now(),
+          });
         } else {
-          if (!normalizedPrice) {
-            throw new Error("No normalized price for lock TX");
-          }
-          result = await api.buildLockTx(normalizedPrice, config.dryRun);
+          setNodeState("tx-builder", { state: "success", output: result, lastRun: Date.now() });
+          setNodeState("execution-result", {
+            state: "success",
+            input: result,
+            output: { txHash: result.txHash, status: result.status },
+            lastRun: Date.now(),
+          });
         }
+        get().fetchWalletInfo();
+        return true;
+      } catch (err) {
+        setNodeState("tx-builder", { state: "error", error: String(err), lastRun: Date.now() });
+        addLog("error", `Lock TX failed: ${err}`, "tx-builder");
+        return false;
+      }
+    },
 
-        const datum = result.datum;
-        const redeemer: ScriptRedeemer | null = shouldUnlock
-          ? { action: "unlock" }
-          : null;
+    buildSpendTx: async () => {
+      const { datum, config, setNodeState, addLog } = get();
+      const api = getApi();
+      const txDatum = datum ?? buildDatumFromConfig(config.decisionConfig);
 
-        set({ txBuild: result, datum, redeemer });
-        setNodeState("tx-builder", {
-          state: "success",
-          output: result,
-          lastRun: Date.now(),
-        });
+      setNodeState("tx-builder", {
+        state: "running",
+        input: { kind: "spend", datum: txDatum },
+        error: null,
+      });
+      setNodeState("aiken-validator", { state: "running", error: null });
+      addLog("info", "Building spend TX…", "tx-builder");
+
+      try {
+        const mnemonic = getMnemonic();
+        const result = await api.buildSpendTx(txDatum, config.dryRun, mnemonic, config.decisionConfig.maxAgeSeconds);
+        set({ txBuild: result, spendResult: result, datum: result.datum });
+
+        setNodeState("tx-builder", { state: "success", output: result, lastRun: Date.now() });
         setNodeState("execution-result", {
           state: "success",
           input: result,
           output: { txHash: result.txHash, status: result.status },
           lastRun: Date.now(),
         });
-        addLog(
-          "success",
-          `${kind.charAt(0).toUpperCase() + kind.slice(1)} TX built (${result.status}): ${result.txHash}`,
-          "tx-builder"
-        );
-      } catch (err) {
-        setNodeState("tx-builder", {
-          state: "error",
-          error: String(err),
+        setNodeState("aiken-validator", {
+          state: "success",
+          output: { script: "price_validator.spend", verified: true },
           lastRun: Date.now(),
         });
-        addLog("error", `TX build failed: ${err}`, "tx-builder");
+        addLog("success", `Spend TX submitted: ${result.txHash}`, "tx-builder");
+        get().fetchWalletInfo();
+        return true;
+      } catch (err) {
+        setNodeState("tx-builder", { state: "error", error: String(err), lastRun: Date.now() });
+        setNodeState("aiken-validator", { state: "error", error: String(err), lastRun: Date.now() });
+        addLog("error", `Spend TX failed: ${err}`, "tx-builder");
+        return false;
       }
+    },
+
+    initBurnerWallet: async () => {
+      try {
+        const wallet = await createBurnerWallet();
+        const address = await wallet.getChangeAddress();
+        set({ burnerAddress: address });
+      } catch (err) {
+        console.error("Failed to init burner wallet:", err);
+      }
+    },
+
+    regenerateWallet: async () => {
+      regenerateMnemonic();
+      const wallet = await createBurnerWallet();
+      const address = await wallet.getChangeAddress();
+      set({ burnerAddress: address, walletInfo: null });
     },
 
     fetchWalletInfo: async () => {
       const api = getApi();
+      const { burnerAddress } = get();
+      if (!burnerAddress) return;
+
       try {
-        const wallet = await api.getWallet();
-        set({ walletInfo: wallet });
+        const info = await api.getWalletBalance(burnerAddress);
+        set({
+          walletInfo: {
+            address: burnerAddress,
+            pkh: "",
+            scriptAddress: info.scriptAddress,
+            network: info.network,
+            balanceLovelace: info.balanceLovelace,
+            configured: info.configured,
+          },
+        });
       } catch {
-        // silently fail — wallet panel will show placeholder
+        // silently fail
       }
     },
 
-    runAll: async () => {
-      const { fetchPrice, normalizePrice, decide, buildTx, addLog } = get();
+    fetchServiceStatus: async () => {
+      const api = getApi();
+      try {
+        const status = await api.getStatus();
+        set({ serviceStatus: status });
+      } catch {
+        // silently fail
+      }
+    },
 
-      addLog("info", "Running full pipeline…");
+    pollLockConfirmation: async (txHash: string) => {
+      const { addLog } = get();
+      set({ lockTxHash: txHash, lockConfirmed: false, lockConfirming: true });
+      addLog("info", "Waiting for lock TX to confirm on-chain…", "tx-builder");
+
+      for (let attempt = 0; attempt < 30; attempt++) {
+        await new Promise((r) => setTimeout(r, 5_000));
+        try {
+          const res = await fetch("/api/tx/confirm", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ txHash }),
+          });
+          const data = await res.json();
+          if (data.confirmed) {
+            set({ lockConfirmed: true, lockConfirming: false });
+            addLog("success", `Lock TX confirmed in block ${data.block}`, "tx-builder");
+            return;
+          }
+        } catch {
+          // retry
+        }
+      }
+      set({ lockConfirming: false });
+      addLog("warn", "Lock TX confirmation timed out — check explorer", "tx-builder");
+    },
+
+    runAll: async () => {
+      const { fetchPrice, decide, buildLockTx, buildSpendTx, addLog } = get();
+
+      addLog("info", "Running escrow pipeline…");
 
       await fetchPrice();
       if (get().nodeStates["pyth-source"].state === "error") return;
-
-      await normalizePrice();
-      if (get().nodeStates["normalize"].state === "error") return;
 
       await decide();
       const decision = get().decision;
       if (get().nodeStates["decision"].state === "error") return;
 
-      if (decision?.action === "block" && !get().config.unlockMode) {
+      if (decision?.action === "block") {
         get().setNodeState("tx-builder", {
           state: "blocked",
           input: null,
@@ -374,18 +449,30 @@ export const usePipelineStore = create<PipelineState>((set, get) => {
         return;
       }
 
-      await buildTx();
+      const lockOk = await buildLockTx();
+      if (!lockOk) return;
+
+      addLog("info", "Lock confirmed — now building spend TX…", "tx-builder");
+
+      // Re-fetch price for the spend (needs fresh payload for on-chain verification)
+      await fetchPrice();
+      if (get().nodeStates["pyth-source"].state === "error") return;
+
+      await buildSpendTx();
     },
 
     reset: () => {
       logCounter = 0;
       set({
-        rawPrice: null,
-        normalizedPrice: null,
+        price: null,
         decision: null,
         datum: null,
-        redeemer: null,
         txBuild: null,
+        lockResult: null,
+        spendResult: null,
+        lockTxHash: null,
+        lockConfirmed: false,
+        lockConfirming: false,
         nodeStates: makeInitialNodeStates(),
         logs: [],
         selectedNodeId: null,

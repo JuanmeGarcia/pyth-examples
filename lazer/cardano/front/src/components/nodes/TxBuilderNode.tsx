@@ -6,20 +6,20 @@ import { Check } from "lucide-react";
 
 export default function TxBuilderNode() {
   const txBuild = usePipelineStore((s) => s.txBuild);
-  const decision = usePipelineStore((s) => s.decision);
-  const config = usePipelineStore((s) => s.config);
-  const buildTx = usePipelineStore((s) => s.buildTx);
+  const runAll = usePipelineStore((s) => s.runAll);
+  const nodeConfigs = usePipelineStore((s) => s.nodeConfigs);
 
-  const kind =
-    config.unlockMode || decision?.action === "unlock" ? "unlock" : "lock";
+  const lockAmount = nodeConfigs["tx-builder"]?.lockAmount ?? "2000000";
+  const lockAda = (parseInt(lockAmount) / 1e6).toFixed(1);
+  const kind = txBuild?.kind ?? "escrow";
 
   return (
     <BaseNode
       nodeId="tx-builder"
       title="TX Builder"
-      subtitle={`${kind} / ${config.dryRun ? "dry-run" : "submit"}`}
-      onRun={buildTx}
-      runLabel={`Build ${kind.charAt(0).toUpperCase() + kind.slice(1)} TX`}
+      subtitle={kind}
+      onRun={runAll}
+      runLabel="Run Escrow"
       showBottomHandle
     >
       <div className="space-y-1.5">
@@ -28,7 +28,7 @@ export default function TxBuilderNode() {
             {kind}
           </span>
         </div>
-        {txBuild && (
+        {txBuild ? (
           <>
             <div className="flex justify-between text-muted">
               <span>datum</span>
@@ -39,24 +39,21 @@ export default function TxBuilderNode() {
             <div className="flex justify-between text-muted">
               <span>redeemer</span>
               <span className="text-secondary">
-                {kind === "unlock" ? "Unlock" : "—"}
+                {txBuild.kind === "spend" ? "Pyth payload" : "—"}
               </span>
             </div>
             <div className="flex justify-between text-muted">
               <span>status</span>
-              <span
-                className="font-semibold"
-                style={{
-                  color:
-                    txBuild.status === "dry-run"
-                      ? "var(--accent-amber)"
-                      : "var(--accent-green)",
-                }}
-              >
+              <span className="font-semibold" style={{ color: "var(--accent-green)" }}>
                 {txBuild.status}
               </span>
             </div>
           </>
+        ) : (
+          <div className="flex justify-between text-muted">
+            <span>amount</span>
+            <span className="text-secondary font-mono">{lockAda} ADA</span>
+          </div>
         )}
       </div>
     </BaseNode>

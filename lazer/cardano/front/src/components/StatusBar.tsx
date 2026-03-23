@@ -23,7 +23,6 @@ function getStepColor(state: string, nodeId: NodeId): string {
 
 export default function StatusBar() {
   const nodeStates = usePipelineStore((s) => s.nodeStates);
-  const config = usePipelineStore((s) => s.config);
   const walletInfo = usePipelineStore((s) => s.walletInfo);
 
   // Derive pipeline status
@@ -87,20 +86,10 @@ export default function StatusBar() {
         })}
       </div>
 
-      {/* Right: Mode badges */}
+      {/* Right: Network badge */}
       <div className="flex items-center gap-2">
-        {config.mockMode && (
-          <span className="rounded-sm px-2 py-0.5 text-[10px] font-bold uppercase bg-accent-green/20 text-accent-green">
-            Mock
-          </span>
-        )}
-        {config.dryRun && (
-          <span className="rounded-sm px-2 py-0.5 text-[10px] font-bold uppercase bg-accent-amber/20 text-accent-amber">
-            Dry-Run
-          </span>
-        )}
         <span className="rounded-sm px-2 py-0.5 text-[10px] font-medium text-secondary" style={{ backgroundColor: "var(--bg-elevated)" }}>
-          {walletInfo?.network ?? "Preview"}
+          {walletInfo?.network ?? "Preprod"}
         </span>
       </div>
     </div>

@@ -1,4 +1,4 @@
-import type { PriceQuote, WalletInfo } from "@/types";
+import type { PriceUpdate, WalletInfo } from "@/types";
 
 function randomHex(bytes: number): string {
   const arr = new Uint8Array(bytes);
@@ -10,23 +10,14 @@ function randomHex(bytes: number): string {
     .join("");
 }
 
-export function randomBtcPrice(): PriceQuote {
-  const basePrice = 65000 + Math.random() * 30000; // 65k–95k
-  const rawPrice = Math.round(basePrice * 1e5); // expo = -5
-  const conf = Math.round(200000 + Math.random() * 100000);
-
+export function randomAdaPrice(): PriceUpdate {
+  // ADA/USD range: $0.30 – $1.20 → 30–120 cents
+  const cents = Math.round(30 + Math.random() * 90);
   return {
-    id: "e62df6c8b4a85fe1a67db44dc12de5db330f7ac66b72dc658afedf0f4a415b43",
-    price: String(rawPrice),
-    conf: String(conf),
-    expo: -5,
-    publishTime: Math.floor(Date.now() / 1000),
-    rawPayload: randomHex(256),
+    feedId: 16,
+    priceUsdCents: String(cents),
+    timestamp: Date.now(),
   };
-}
-
-export function fakePayloadHash(): string {
-  return randomHex(32);
 }
 
 export function fakeTxHash(): string {
@@ -38,7 +29,9 @@ export function fakeWallet(): WalletInfo {
     address: "addr_test1qr8nk3v5m9fjp7xz5l4v6jsd82mvcwas347s29",
     pkh: "fc3393513a0bc14fba0c0e8a9593a120e2e1456d47729a94c87466b",
     scriptAddress: "addr_test1wr9k5mjr8xqv6zx3hm7pzya5mlr9",
-    network: "Preview",
+    network: "Preprod",
+    balanceLovelace: "25000000",
+    configured: true,
   };
 }
 

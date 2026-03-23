@@ -1,264 +1,100 @@
-# Pipeline — Flujo completo
+# Pipeline
 
-## Diagrama
-
-```
-┌──────────────┐    PriceQuote    ┌───────────────┐    NormalizedPrice   ┌─────────────┐
-│ Pyth Hermes  │ ──────────────→  │  normalizer   │  ─────────────────→  │   decision  │
-│  HTTP GET    │                  │  expo + hash  │                       │   engine    │
-└──────────────┘                  └───────────────┘                       └──────┬──────┘
-                                                                                │
-                                                                    ┌───────────┴───────────┐
-                                                                    │                       │
-                                                              deposit/lock            unlock
-                                                                    │                       │
-                                                             ┌──────▼──────┐        ┌───────▼──────┐
-                                                             │ buildLockTx │        │buildUnlockTx │
-                                                             │  5 ADA →    │        │  script →    │
-                                                             │  script     │        │  wallet      │
-                                                             └──────┬──────┘        └───────┬──────┘
-                                                                    │                       │
-                                                                    ▼                       ▼
-                                                             unsigned CBOR           unsigned CBOR
-                                                                    │                       │
-                                                             ┌──────▼───────────────────────▼──────┐
-                                                             │     Client signs + submits           │
-                                                             │     Cardano Preview testnet          │
-                                                             └─────────────────────────────────────┘
-```
-
-## Capas del sistema
+## Architecture
 
 ```
-api/src/
-  providers/      ← CAPA 1: obtener datos externos (Pyth Hermes, Blockfrost)
-  services/       ← CAPA 2: lógica de dominio pura (sin I/O)
-  cardano/        ← CAPA 3: construcción de transacciones (Mesh SDK)
-  routes/         ← CAPA 4: exposición HTTP
-  server.ts       ← CAPA 5: orquestación Express
+┌────────────────┐     PriceUpdate      ┌──────────────┐     OracleDatum      ┌────────────┐
+│  Pyth Lazer    │ ──────────────────→   │   Decision   │  ─────────────────→  │ TX Builder │
+│  WebSocket     │  ADA/USD feed 16     │   Engine     │  lock or spend       │ Mesh SDK   │
+└────────────────┘                      └──────────────┘                      └─────┬──────┘
+                                                                                    │
+                                                                          ┌─────────┴─────────┐
+                                                                          │                   │
+                                                                       lock                spend
+                                                                          │                   │
+                                                                   ┌──────▼──────┐    ┌───────▼──────┐
+                                                                   │  2 ADA →    │    │  script →    │
+                                                                   │  script     │    │  wallet      │
+                                                                   │  + datum    │    │  + redeemer  │
+                                                                   └──────┬──────┘    └───────┬──────┘
+                                                                          │                   │
+                                                                          ▼                   ▼
+                                                                   sign + submit       sign + submit
+                                                                   (MeshWallet)        (MeshWallet)
 ```
 
-Cada capa solo conoce la anterior. El contrato Aiken es independiente de todas.
+## System layers
 
----
-
-## Paso 1 — Fetch precio
-
-**Código:** `providers/pythHermes.ts`
-
-```typescript
-import { getPrice } from "./providers/pythHermes.js";
-
-const quote = await getPrice(BTC_USD_FEED_ID);
-// PriceQuote { id, price, conf, expo, publishTime, rawPayload }
+```
+front/src/
+  lib/pyth.ts         ← LAYER 1: Pyth Lazer WebSocket (server-only)
+  lib/price.ts        ← LAYER 2: decision logic (pure functions)
+  lib/cardano.ts      ← LAYER 3: Mesh SDK wallet + TX building (server-only)
+  app/api/            ← LAYER 4: Next.js API routes (HTTP surface)
+  store/              ← LAYER 5: Zustand state management (client)
+  components/         ← LAYER 6: React UI (client)
 ```
 
-Hace un GET a Hermes y mapea la respuesta a `PriceQuote`. Sin lógica de negocio.
+Each layer only knows the one before it. The on-chain validator is independent of all.
 
----
+## Step 1 — Fetch price
 
-## Paso 2 — Normalizar
+**Code:** `lib/pyth.ts`
 
-**Código:** `services/normalizePrice.ts`
+Connects to Pyth Lazer WebSocket endpoints, subscribes to ADA/USD (feed 16) at
+200ms fixed rate. Converts mantissa × 10^(exponent+2) to USD cents. Caches the
+latest update in memory.
 
-```typescript
-import { normalizePrice } from "./services/normalizePrice.js";
+## Step 2 — Decide
 
-const price = normalizePrice(quote);
-// NormalizedPrice { feedId, value, valueScaled, confidence, timestamp, payloadHash }
-```
+**Code:** `lib/price.ts`
 
-Convierte:
-- `price.price × 10^expo` → `value` (float human-readable)
-- `price.price × 10^(6+expo)` → `valueScaled` (bigint con 6 decimales, como string)
-- `sha256(rawPayload)` → `payloadHash`
+Pure function that compares the live price against the `OracleDatum` condition:
 
----
-
-## Paso 3 — Decidir
-
-**Código:** `services/decisionEngine.ts`
-
-```typescript
-import { decide } from "./services/decisionEngine.js";
-
-const decision = decide(price, { priceThreshold: 90_000, maxAgeSeconds: 60 });
-// { action: "deposit" | "unlock" | "block", reason: string }
-```
-
-| Condición | Acción |
+| Datum variant | Spend if |
 |---|---|
-| `age > maxAgeSeconds` | `block` — precio viejo |
-| `price.value < priceThreshold` | `deposit` — lockear fondos |
-| `price.value >= priceThreshold` | `unlock` — liberar fondos |
+| `AnyPrice` | always |
+| `MinPrice { min }` | price >= min |
+| `MaxPrice { max }` | price <= max |
+| `PriceRange { lo, hi }` | lo <= price <= hi |
 
----
+Also checks staleness: if price is older than `maxAgeSeconds`, returns `block`.
 
-## Paso 4a — Lock TX
+## Step 3a — Lock TX
 
-**Código:** `cardano/txBuilder.ts → buildLockTx`
+**Code:** `lib/cardano.ts → lockOracleUtxo`
 
-```typescript
-import { buildLockTx } from "./cardano/txBuilder.js";
+Sends lovelace to the script address with an inline `OracleDatum`. The wallet
+signs and submits automatically (server-side `MeshWallet` with mnemonic).
 
-const result = await buildLockTx({
-  walletAddress,
-  utxos,
-  price: { valueScaled, timestamp, payloadHash },
-  lockAmount: "5000000",
-});
-// { unsignedTx, scriptAddress, datum }
-```
+## Step 3b — Spend TX
 
-Construye usando `MeshTxBuilder`:
-1. Datum inline: `{ alternative: 0, fields: [pkh, priceScaled, timestamp, payloadHash] }`
-2. Output de 5 ADA al script address con el datum
-3. Retorna CBOR sin firmar — el cliente firma y submite
+**Code:** `lib/cardano.ts → spendOracleUtxo`
 
-**TX resultante:**
-```
-Input:   wallet UTxO (paga 5 ADA + fees)
-Output:  script address → 5 ADA + datum inline
-Change:  wallet (resto)
-```
+Spends a UTxO from the script address. The raw Pyth Lazer payload goes into the
+redeemer. The on-chain validator uses the `pyth` Aiken library to verify the
+price update and check it against the datum condition.
 
----
-
-## Paso 4b — Unlock TX
-
-**Código:** `cardano/txBuilder.ts → buildUnlockTx`
+## Domain types
 
 ```typescript
-import { buildUnlockTx } from "./cardano/txBuilder.js";
+// On-chain datum (mirrors Aiken OracleDatum)
+type OracleDatum =
+  | { kind: "AnyPrice" }
+  | { kind: "MinPrice"; minPriceUsdCents: number }
+  | { kind: "MaxPrice"; maxPriceUsdCents: number }
+  | { kind: "PriceRange"; loCents: number; hiCents: number };
 
-const result = await buildUnlockTx({
-  walletAddress,
-  utxos,
-  collateral,
-  scriptUtxo,
-  toAddress,
-});
-// { unsignedTx, scriptAddress, utxoSpent }
-```
-
-Construye usando `MeshTxBuilder`:
-1. `.spendingPlutusScriptV3()` — indica script Plutus V3
-2. `.txIn(hash, index)` + `.txInInlineDatumPresent()` — gasta el UTxO con datum inline
-3. `.txInRedeemerValue({ alternative: 0, fields: [] })` — redeemer `Unlock`
-4. `.txInScript(script.code)` — adjunta el validator
-5. `.requiredSignerHash(ownerPkh)` — required signer
-6. `.txInCollateral(...)` — colateral para ejecución Plutus
-
-**TX resultante:**
-```
-Input:   script UTxO (el que fue lockeado)
-         wallet UTxO (colateral para Plutus)
-Output:  recipient o wallet → 5 ADA - fees
-Signer:  wallet pkh (satisface datum.owner check)
-```
-
----
-
-## Tipos del dominio
-
-```typescript
-// Lo que viene de Pyth
-interface PriceQuote {
-  id: string;
-  price: string;
-  conf: string;
-  expo: number;
-  publishTime: number;
-  rawPayload: string;
-}
-
-// Lo que circula internamente
-interface NormalizedPrice {
-  feedId: string;
-  value: number;
-  valueScaled: string;    // bigint como string
-  confidence: number;
+// What comes from Pyth Lazer
+interface PriceUpdate {
+  feedId: number;
+  priceUsdCents: string;
   timestamp: number;
-  payloadHash: string;
 }
 
-// Lo que va on-chain (datum)
-interface ScriptDatum {
-  owner: string;
-  price: string;           // valueScaled como string
-  timestamp: number;
-  payloadHash: string;
-}
-
-// Mesh Data format para el datum
-const meshDatum: Data = {
-  alternative: 0,
-  fields: [owner, price, timestamp, payloadHash],
-};
-
-// Mesh Data format para el redeemer
-const meshRedeemer: Data = {
-  alternative: 0,
-  fields: [],
-};
-```
-
----
-
-## Agregar un nuevo módulo al pipeline
-
-Para insertar un paso nuevo (ej: validar confianza del precio):
-
-1. **Crear la función** en `services/`:
-```typescript
-// services/validateConfidence.ts
-export function validateConfidence(price: NormalizedPrice): boolean {
-  return price.confidence / price.value < 0.001; // < 0.1% confianza
+// Decision output
+interface ActionDecision {
+  action: "lock" | "spend" | "block";
+  reason: string;
 }
 ```
-
-2. **Usarla en `decisionEngine.ts`** antes de decidir:
-```typescript
-if (!validateConfidence(price)) {
-  return { action: "block", reason: "Low confidence interval" };
-}
-```
-
-3. **Exponerla en el server** si necesita ser llamable desde la UI:
-```typescript
-// routes/validate.ts
-router.post("/validate", wrap(async (req, res) => {
-  const { price } = req.body;
-  res.json({ valid: validateConfidence(price) });
-}));
-```
-
-4. **Agregar el nodo en la UI** creando un componente en `front/src/components/nodes/` y registrándolo en `graph/initialGraph.ts`.
-
-La separación por capas garantiza que ningún paso conoce los detalles de implementación del siguiente.
-
----
-
-## Reemplazar Pyth Hermes por Pyth Pro
-
-Solo requiere cambiar el provider. El resto del pipeline es idéntico:
-
-```typescript
-// providers/pythPro.ts
-export async function getPricePro(feedId: string, apiKey: string): Promise<PriceQuote> {
-  const res = await fetch(`https://benchmarks.pyth.network/v1/...`, {
-    headers: { Authorization: `Bearer ${apiKey}` },
-  });
-  const vaa = await res.json();
-  return {
-    id: feedId,
-    price: vaa.price,
-    conf: vaa.conf,
-    expo: vaa.expo,
-    publishTime: vaa.publishTime,
-    rawPayload: JSON.stringify(vaa.binary),
-  };
-}
-```
-
-En `server.ts` o el route de precio, se intercambia el provider sin tocar nada más.
